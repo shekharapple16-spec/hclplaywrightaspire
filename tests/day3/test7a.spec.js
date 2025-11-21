@@ -29,13 +29,8 @@ test('Checkbox Validation on LeafGround', async ({ page }) => {
 
   const count = await divs.count()
 
-
-for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i++) {
     await divs.nth(i).click();
-}
-
-
-
-
+  }
 
 });
