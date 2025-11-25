@@ -1,24 +1,29 @@
 ﻿const { test, expect } = require('@playwright/test');
 
-test('Dojo Toolkit Range Slider Validation', async ({ page }) => {
+test('simple dojo horizontal slider test', async ({ page }) => {
   await page.goto('https://dojotoolkit.org/documentation/tutorials/1.9/sliders/demos/simple.php');
 
-  const horizontalValue = page.locator('#horizontalSlider .dijitSliderValue');
-  const verticalValue = page.locator('#verticalSlider .dijitSliderValue');
+  const hslider = page.locator('.dijitSliderBarContainerH');
+  const vslider = page.locator('.dijitSliderBarContainerV');
 
-  if (await horizontalValue.count() === 0 && await verticalValue.count() === 0) {
-    throw new Error('No horizontal or vertical slider value elements found on page');
-  }
+  // Click on the slider bar somewhere to the right
+  await hslider.click({ position: { x: 80, y: 5 } });
 
-  if (await horizontalValue.count() > 0) {
-    const hv = Number((await horizontalValue.textContent())?.trim() || '0');
-    expect(hv).toBeGreaterThanOrEqual(0);
-    expect(hv).toBeLessThanOrEqual(100);
-  }
+  // The displayed value is inside the span with id="sliderValue"
+  const value = await page.locator('#decValue').innerText();
 
-  if (await verticalValue.count() > 0) {
-    const vv = Number((await verticalValue.textContent())?.trim() || '0');
-    expect(vv).toBeGreaterThanOrEqual(0);
-    expect(vv).toBeLessThanOrEqual(100);
-  }
+  console.log("Slider horizaontal value:", value);
+
+  // Assert slider value changed from default (0)
+  expect(Number(value)).toBeGreaterThan(0);
+
+  await vslider.click({ position: { x: 0, y: 80 } });
+
+  // The displayed value is inside the span with id="sliderValue"
+  const valueV = await page.locator('#vertValue').innerText();
+
+  console.log("Slider vertical value:", valueV);
+
+  // Assert slider value changed from default (0)
+  expect(Number(valueV)).toBeGreaterThan(0);
 });
