@@ -22,23 +22,8 @@ jobs:
 
     # Run day3 tests
     - name: Run Day 3 Tests
-      run: xvfb-run --auto-servernum npx playwright test tests/day3 --workers=1 --timeout=60000
+      run: npx playwright test tests/day3 --workers=6
 
-    # Run day4 tests
-    - name: Run Day 4 Tests
-      run: xvfb-run --auto-servernum npx playwright test tests/day4 --workers=1 --timeout=60000
-
-    # Run day5 tests
-    - name: Run Day 5 Tests
-      run: xvfb-run --auto-servernum npx playwright test tests/day5 --workers=1 --timeout=60000
-
-    # Run day6 tests
-    - name: Run Day 6 Tests
-      run: xvfb-run --auto-servernum npx playwright test tests/day6 --workers=1 --timeout=60000
-
-    # Run day7 tests
-    - name: Run Day 7 Tests
-      run: xvfb-run --auto-servernum npx playwright test tests/day7 --workers=1 --timeout=60000
 
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
