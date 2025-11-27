@@ -7,4 +7,6 @@ node_modules/
 /playwright/.cache/
 /playwright/.auth/
 tsconfig.json
-
+.github/chatmodes/
+tests/seed.spec.ts
+.vscode/
