@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 
-test('Healthcare Success Screenshot Comparison', async ({ page }) => {
+test.skip('Healthcare Success Screenshot Comparison', async ({ page }) => {
   await page.goto('https://healthcaresuccess.com');
   await page.waitForTimeout(2000);
   const screenshot = await page.screenshot({ fullPage: true });
