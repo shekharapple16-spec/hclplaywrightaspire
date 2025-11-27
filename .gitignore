@@ -10,3 +10,4 @@ tsconfig.json
 .github/chatmodes/
 tests/seed.spec.ts
 .vscode/
+.continue/
