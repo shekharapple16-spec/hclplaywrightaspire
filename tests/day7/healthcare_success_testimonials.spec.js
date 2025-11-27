@@ -8,7 +8,7 @@ test('Extract testimonials from Healthcare Success and write to file', async ({ 
     await page.goto('https://healthcaresuccess.com/about/testimonials');
 
     // Extract all visible testimonial content
-    const testimonials = await page.locator('.et_pb_testimonial_description').allTextContents();
+    const testimonials = await page.locator('.testimonial-slide-text').allTextContents();
 
     // Write the extracted text into a file
     const filePath = path.join(__dirname, 'testimonials.txt');
