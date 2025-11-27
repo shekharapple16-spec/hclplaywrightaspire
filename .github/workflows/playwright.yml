@@ -22,7 +22,7 @@ jobs:
 
     # Run day3 tests
     - name: Run Day 3 Tests
-      run: npx playwright test tests/day3 --workers=6
+      run: npx playwright test tests/day6 --workers=6
 
 
     - uses: actions/upload-artifact@v4
