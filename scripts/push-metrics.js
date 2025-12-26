@@ -1,5 +1,6 @@
 const fs = require('fs');
-const { RemoteWriteClient } = require('prometheus-remote-write');
+// Corrected import: The library exports the constructor directly, not as a named export.
+const RemoteWriteClient = require('prometheus-remote-write');
 
 // --- Configuration ---
 const resultsPath = 'test-results/results.json';
@@ -93,6 +94,7 @@ const series = [
 
 async function pushMetrics() {
   try {
+    // Instantiate the client directly from the required module
     const client = new RemoteWriteClient({
       url: promUrl,
       username: promUser,
@@ -103,9 +105,6 @@ async function pushMetrics() {
     console.log(`Attempting to push ${series.length} time series to ${promUrl}`);
 
     // The client expects an array of TimeSeries objects.
-    // The library's TimeSeries format is slightly different from the simple object above,
-    // but the library is designed to handle this conversion.
-    // We'll use the client's push method which takes an array of series objects.
     await client.push(series);
 
     console.log('Successfully pushed metrics to Grafana Cloud.');
