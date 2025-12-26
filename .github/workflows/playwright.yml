@@ -30,7 +30,8 @@ jobs:
 
       # --- NEW STEP ADDED HERE ---
       - name: Install Prometheus Remote Write dependencies
-        run: npm install prometheus-remote-write protobufjs snappy
+        run: npm install protobufjs snappy prometheus-remote-write
+
 
       - name: Push metrics to Grafana Cloud
         env:
