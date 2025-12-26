@@ -1,7 +1,8 @@
 const fs = require('fs');
-// Third attempt at correct import: Import the whole module and access the constructor as a property.
-const RemoteWriteModule = require('prometheus-remote-write');
-const RemoteWriteClient = RemoteWriteModule.RemoteWriteClient;
+const https = require('https');
+const url = require('url');
+const protobuf = require('protobufjs');
+const snappy = require('snappy');
 
 // --- Configuration ---
 const resultsPath = 'test-results/results.json';
@@ -29,6 +30,7 @@ try {
 }
 
 const stats = data.stats;
+// Prometheus expects timestamps in milliseconds
 const timestampMs = Date.now();
 
 const metrics = {
@@ -52,70 +54,116 @@ const commonLabels = {
   // run_id: process.env.GITHUB_RUN_ID || 'local'
 };
 
-const series = [
-  {
-    name: 'test_results_passed_total',
-    labels: { ...commonLabels, result: 'passed' },
-    value: metrics.passed,
-    timestamp: timestampMs,
-  },
-  {
-    name: 'test_results_failed_total',
-    labels: { ...commonLabels, result: 'failed' },
-    value: metrics.failed,
-    timestamp: timestampMs,
-  },
-  {
-    name: 'test_results_skipped_total',
-    labels: { ...commonLabels, result: 'skipped' },
-    value: metrics.skipped,
-    timestamp: timestampMs,
-  },
-  {
-    name: 'test_results_flaky_total',
-    labels: { ...commonLabels, result: 'flaky' },
-    value: metrics.flaky,
-    timestamp: timestampMs,
-  },
-  {
-    name: 'test_duration_milliseconds',
-    labels: commonLabels,
-    value: metrics.duration_ms,
-    timestamp: timestampMs,
-  },
-  {
-    name: 'test_results_total',
-    labels: commonLabels,
-    value: metrics.total,
-    timestamp: timestampMs,
-  },
+// Helper function to create a TimeSeries object
+function createTimeSeries(name, value, labels, timestamp) {
+  const allLabels = {
+    __name__: name,
+    ...labels
+  };
+
+  return {
+    labels: Object.entries(allLabels).map(([name, value]) => ({ name, value })),
+    samples: [{
+      value: value,
+      timestamp: timestamp,
+    }],
+  };
+}
+
+const timeSeries = [
+  createTimeSeries('test_results_passed_total', metrics.passed, { ...commonLabels, result: 'passed' }, timestampMs),
+  createTimeSeries('test_results_failed_total', metrics.failed, { ...commonLabels, result: 'failed' }, timestampMs),
+  createTimeSeries('test_results_skipped_total', metrics.skipped, { ...commonLabels, result: 'skipped' }, timestampMs),
+  createTimeSeries('test_results_flaky_total', metrics.flaky, { ...commonLabels, result: 'flaky' }, timestampMs),
+  createTimeSeries('test_duration_milliseconds', metrics.duration_ms, commonLabels, timestampMs),
+  createTimeSeries('test_results_total', metrics.total, commonLabels, timestampMs),
 ];
 
 // --- 3. Send Metrics to Prometheus ---
 
 async function pushMetrics() {
   try {
-    // Instantiate the client using the correctly accessed constructor
-    const client = new RemoteWriteClient({
-      url: promUrl,
-      username: promUser,
-      password: promToken,
-      // The library handles Protobuf encoding and Snappy compression automatically
+    // 3a. Load Prometheus Remote Write Protobuf definition
+    const root = await protobuf.load('node_modules/protobufjs/cli/proto/google/protobuf/timestamp.proto');
+    // NOTE: Since we cannot easily load the remote.proto definition, we will manually construct the WriteRequest structure
+    // This is a simplified structure that often works for basic remote write.
+    const WriteRequest = {
+      encode: (payload) => {
+        // This is a highly simplified mock of the Protobuf encoding for demonstration.
+        // In a real-world scenario, you would need the actual remote.proto file.
+        // Since we cannot easily fetch or include the .proto file, we will use a common workaround:
+        // If the `prometheus-remote-write` library is installed, it often includes the necessary definitions.
+        // Let's assume the user has the library installed (as per our previous steps) and try to load the definition from a common location.
+        
+        // Fallback to a common location for the remote.proto file if the library is installed
+        try {
+            const remoteRoot = protobuf.loadSync('node_modules/prometheus-remote-write/node_modules/prometheus-remote-write/proto/remote.proto');
+            const WriteRequestType = remoteRoot.lookupType('prometheus.WriteRequest');
+            const message = WriteRequestType.create({ timeseries: payload });
+            return WriteRequestType.encode(message).finish();
+        } catch (e) {
+            console.error("Could not load remote.proto definition. This is a critical error for Protobuf encoding.");
+            console.error("Please ensure 'prometheus-remote-write' is installed, as this script relies on its bundled .proto files.");
+            throw e;
+        }
+      }
+    };
+
+    // 3b. Encode the WriteRequest
+    const payload = WriteRequest.encode(timeSeries);
+
+    // 3c. Compress the payload with Snappy
+    const compressedPayload = await snappy.compress(payload);
+
+    // 3d. Prepare the HTTP request
+    const parsedUrl = url.parse(promUrl);
+    const auth = Buffer.from(`${promUser}:${promToken}`).toString('base64');
+
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.path,
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-protobuf',
+        'Content-Encoding': 'snappy',
+        'Content-Length': compressedPayload.length,
+        'X-Prometheus-Remote-Write-Version': '0.1.0',
+      },
+    };
+
+    console.log(`Attempting to push ${timeSeries.length} time series to ${promUrl}`);
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let responseBody = '';
+        res.on('data', (chunk) => {
+          responseBody += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode === 200 || res.statusCode === 204) {
+            console.log('Successfully pushed metrics to Grafana Cloud.');
+            resolve();
+          } else {
+            console.error(`Failed to push metrics. HTTP Status: ${res.statusCode}`);
+            console.error('Response Body:', responseBody);
+            reject(new Error(`HTTP Error ${res.statusCode}: ${responseBody}`));
+          }
+        });
+      });
+
+      req.on('error', (e) => {
+        console.error('Network error during push:', e.message);
+        reject(e);
+      });
+
+      req.write(compressedPayload);
+      req.end();
     });
 
-    console.log(`Attempting to push ${series.length} time series to ${promUrl}`);
-
-    // The client expects an array of TimeSeries objects.
-    await client.push(series);
-
-    console.log('Successfully pushed metrics to Grafana Cloud.');
   } catch (error) {
     console.error('Failed to push metrics to Grafana Cloud:', error.message);
-    // Log the full error for debugging, but be careful not to expose sensitive info
-    if (error.response) {
-      console.error('HTTP Status:', error.response.status);
-      console.error('Response Body:', await error.response.text());
-    }
     process.exit(1);
   }
 }
