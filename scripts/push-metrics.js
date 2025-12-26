@@ -1,10 +1,11 @@
 const fs = require('fs');
-// Corrected import: The library exports the constructor directly, not as a named export.
-const RemoteWriteClient = require('prometheus-remote-write');
+// Third attempt at correct import: Import the whole module and access the constructor as a property.
+const RemoteWriteModule = require('prometheus-remote-write');
+const RemoteWriteClient = RemoteWriteModule.RemoteWriteClient;
 
 // --- Configuration ---
 const resultsPath = 'test-results/results.json';
-const promUrl = "https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom/push";
+const promUrl = process.env.GRAFANA_PROM_URL;
 const promUser = process.env.GRAFANA_PROM_USER;
 const promToken = process.env.GRAFANA_PROM_TOKEN;
 
@@ -94,7 +95,7 @@ const series = [
 
 async function pushMetrics() {
   try {
-    // Instantiate the client directly from the required module
+    // Instantiate the client using the correctly accessed constructor
     const client = new RemoteWriteClient({
       url: promUrl,
       username: promUser,
