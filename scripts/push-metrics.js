@@ -84,33 +84,31 @@ const timeSeries = [
 async function pushMetrics() {
   try {
     // 3a. Load Prometheus Remote Write Protobuf definition
-    const root = await protobuf.load('node_modules/protobufjs/cli/proto/google/protobuf/timestamp.proto');
-    // NOTE: Since we cannot easily load the remote.proto definition, we will manually construct the WriteRequest structure
-    // This is a simplified structure that often works for basic remote write.
-    const WriteRequest = {
-      encode: (payload) => {
-        // This is a highly simplified mock of the Protobuf encoding for demonstration.
-        // In a real-world scenario, you would need the actual remote.proto file.
-        // Since we cannot easily fetch or include the .proto file, we will use a common workaround:
-        // If the `prometheus-remote-write` library is installed, it often includes the necessary definitions.
-        // Let's assume the user has the library installed (as per our previous steps) and try to load the definition from a common location.
-        
-        // Fallback to a common location for the remote.proto file if the library is installed
-        try {
-            const remoteRoot = protobuf.loadSync('node_modules/prometheus-remote-write/node_modules/prometheus-remote-write/proto/remote.proto');
-            const WriteRequestType = remoteRoot.lookupType('prometheus.WriteRequest');
-            const message = WriteRequestType.create({ timeseries: payload });
-            return WriteRequestType.encode(message).finish();
-        } catch (e) {
-            console.error("Could not load remote.proto definition. This is a critical error for Protobuf encoding.");
-            console.error("Please ensure 'prometheus-remote-write' is installed, as this script relies on its bundled .proto files.");
-            throw e;
+    let remoteProtoPath = '';
+    const possiblePaths = [
+        'node_modules/prometheus-remote-write/proto/remote.proto', // Most common path
+        'node_modules/prometheus-remote-write/node_modules/prometheus-remote-write/proto/remote.proto', // Nested path
+    ];
+
+    for (const path of possiblePaths) {
+        if (fs.existsSync(path)) {
+            remoteProtoPath = path;
+            break;
         }
-      }
-    };
+    }
+
+    if (!remoteProtoPath) {
+        console.error("Could not find 'remote.proto' file in expected locations.");
+        console.error("Please ensure 'prometheus-remote-write' is installed via npm.");
+        process.exit(1);
+    }
+
+    const remoteRoot = await protobuf.load(remoteProtoPath);
+    const WriteRequestType = remoteRoot.lookupType('prometheus.WriteRequest');
 
     // 3b. Encode the WriteRequest
-    const payload = WriteRequest.encode(timeSeries);
+    const message = WriteRequestType.create({ timeseries: timeSeries });
+    const payload = WriteRequestType.encode(message).finish();
 
     // 3c. Compress the payload with Snappy
     const compressedPayload = await snappy.compress(payload);
