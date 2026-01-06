@@ -1,5 +1,3 @@
-Test Case: SauceDemo Positive Login Scenario
-
 Description: Verify that a user can successfully log in to SauceDemo with valid credentials.
 
 Pre-conditions:
@@ -17,4 +15,4 @@ Expected Result:
 - The shopping cart icon should be visible.
 
 Post-conditions:
-- The user is logged into the application.
+- The user is logged into the application.  with another negative sceanrio as well
