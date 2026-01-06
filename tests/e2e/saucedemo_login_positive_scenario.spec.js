@@ -1,46 +1,61 @@
 import { test, expect } from '@playwright/test';
 
-test('SauceDemo Positive Login Scenario', async ({ page }) => {
-  // Arrange – Navigate to the login page and wait for network idle
+test('User can log in with valid credentials', async ({ page }) => {
+  // Arrange – Navigate to login page and wait for network idle
   await page.goto('https://www.saucedemo.com/');
   await page.waitForLoadState('networkidle');
 
-  // Act – Fill in username
+  // Act – Fill username
   const usernameInput = page.getByPlaceholder('Username');
-  try {
-    await usernameInput.waitFor({ state: 'visible', timeout: 10000 });
-  } catch {
-    // Fallback to CSS selector if placeholder lookup fails
-    await page.locator('input[data-test="username"]').waitFor({ state: 'visible', timeout: 10000 });
-  }
+  await usernameInput.waitFor({ state: 'visible', timeout: 10000 });
   await usernameInput.fill('standard_user');
 
-  // Act – Fill in password
+  // Act – Fill password
   const passwordInput = page.getByPlaceholder('Password');
-  try {
-    await passwordInput.waitFor({ state: 'visible', timeout: 10000 });
-  } catch {
-    // Fallback to CSS selector if placeholder lookup fails
-    await page.locator('input[data-test="password"]').waitFor({ state: 'visible', timeout: 10000 });
-  }
+  await passwordInput.waitFor({ state: 'visible', timeout: 10000 });
   await passwordInput.fill('secret_sauce');
 
-  // Act – Click the Login button
+  // Act – Click Login button
   const loginButton = page.getByRole('button', { name: 'Login' });
   await loginButton.waitFor({ state: 'visible', timeout: 10000 });
   await loginButton.click();
 
-  // Assert – Verify URL contains inventory page
+  // Assert – Verify inventory page URL
   await page.waitForURL('**/inventory.html', { timeout: 10000 });
-  await expect(page).toHaveURL(/inventory\.html/);
 
-  // Assert – Verify "Products" header is visible
-  const productsHeader = page.locator('.header_secondary_container .title');
+  // Assert – Verify Products header is visible
+  const productsHeader = page.getByRole('heading', { name: 'Products' });
   await productsHeader.waitFor({ state: 'visible', timeout: 10000 });
   await expect(productsHeader).toBeTruthy();
 
   // Assert – Verify shopping cart icon is visible
-  const cartIcon = page.locator('.shopping_cart_link');
+  const cartIcon = page.getByRole('link', { name: 'Shopping Cart' });
   await cartIcon.waitFor({ state: 'visible', timeout: 10000 });
   await expect(cartIcon).toBeTruthy();
+});
+
+test('User cannot log in with locked out credentials', async ({ page }) => {
+  // Arrange – Navigate to login page and wait for network idle
+  await page.goto('https://www.saucedemo.com/');
+  await page.waitForLoadState('networkidle');
+
+  // Act – Fill locked out username
+  const usernameInput = page.getByPlaceholder('Username');
+  await usernameInput.waitFor({ state: 'visible', timeout: 10000 });
+  await usernameInput.fill('locked_out_user');
+
+  // Act – Fill password
+  const passwordInput = page.getByPlaceholder('Password');
+  await passwordInput.waitFor({ state: 'visible', timeout: 10000 });
+  await passwordInput.fill('secret_sauce');
+
+  // Act – Click Login button
+  const loginButton = page.getByRole('button', { name: 'Login' });
+  await loginButton.waitFor({ state: 'visible', timeout: 10000 });
+  await loginButton.click();
+
+  // Assert – Verify error message is displayed
+  const errorMessage = page.getByRole('alert');
+  await errorMessage.waitFor({ state: 'visible', timeout: 10000 });
+  await expect(errorMessage).toContainText('Sorry, this user has been locked out.');
 });
