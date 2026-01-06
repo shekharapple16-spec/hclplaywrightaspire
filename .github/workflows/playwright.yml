@@ -78,19 +78,3 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 30
-
-      - name: Comment PR with Test Results
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const testFiles = '${{ needs.detect-tests.outputs.test-files }}'.split(',');
-            const body = `## ✅ Playwright Tests Executed\n\n**Test Files Run:**\n${testFiles.map(f => `- ${f}`).join('\n')}\n\n📊 View detailed report in [Artifacts](../../actions/runs/${{ github.run_id }})`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
