@@ -18,26 +18,3 @@ Expected Result:
 
 Post-conditions:
 - The user is logged into the application.
-
-
---------------------------------------------------
-Test Case: SauceDemo Logout After Successful Login
-
-Description:
-Verify that a logged-in user can successfully log out from the SauceDemo application.
-
-Pre-conditions:
-- The user is logged into SauceDemo using valid credentials.
-- The inventory page is displayed.
-
-Test Steps:
-1. Click on the menu (hamburger) icon on the top-left corner.
-2. Click on the "Logout" option.
-
-Expected Result:
-- The user should be logged out successfully.
-- The user should be redirected to the SauceDemo login page (https://www.saucedemo.com/).
-- The Username and Password fields should be visible.
-
-Post-conditions:
-- The user is logged out of the application.
