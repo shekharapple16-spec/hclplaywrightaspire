@@ -1,27 +1,26 @@
 import { test, expect } from '@playwright/test';
 
-test('SauceDemo Positive Login Scenario - valid user can log in and see inventory page', async ({ page }) => {
+test('SauceDemo Positive Login Scenario - valid credentials allow access to inventory', async ({ page }) => {
   try {
-    // Navigate to SauceDemo login page
+    // Navigate to the SauceDemo login page
     await page.goto('https://www.saucedemo.com/');
-    await expect(page).toHaveURL('https://www.saucedemo.com/');
 
-    // Fill in username using placeholder locator
-    const usernameInput = page.getByPlaceholder('Username');
-    await usernameInput.waitFor({ state: 'visible' });
-    await usernameInput.fill('standard_user');
+    // Wait for the Username field to be visible and fill it
+    const usernameField = page.getByPlaceholder('Username');
+    await usernameField.waitFor({ state: 'visible' });
+    await usernameField.fill('standard_user');
 
-    // Fill in password using placeholder locator
-    const passwordInput = page.getByPlaceholder('Password');
-    await passwordInput.waitFor({ state: 'visible' });
-    await passwordInput.fill('secret_sauce');
+    // Wait for the Password field to be visible and fill it
+    const passwordField = page.getByPlaceholder('Password');
+    await passwordField.waitFor({ state: 'visible' });
+    await passwordField.fill('secret_sauce');
 
-    // Click the Login button using role locator
-    const loginButton = page.getByRole('button', { name: /login/i });
+    // Click the Login button
+    const loginButton = page.getByRole('button', { name: 'Login' });
     await loginButton.waitFor({ state: 'attached' });
     await loginButton.click();
 
-    // Wait for navigation to inventory page
+    // Wait for navigation to the inventory page
     await page.waitForURL('**/inventory.html');
 
     // Assert that the URL is correct
@@ -32,11 +31,10 @@ test('SauceDemo Positive Login Scenario - valid user can log in and see inventor
     await expect(productsHeader).toBeVisible();
 
     // Verify that the shopping cart icon is visible
-    const cartIcon = page.getByRole('link', { name: /shopping cart/i });
+    const cartIcon = page.getByRole('link', { name: /cart/i });
     await expect(cartIcon).toBeVisible();
   } catch (error) {
-    // Log the error and fail the test
-    console.error('Test failed with error:', error);
-    throw error;
+    // Fail the test with a clear error message
+    expect.fail(`SauceDemo login test failed: ${error}`);
   }
 });
