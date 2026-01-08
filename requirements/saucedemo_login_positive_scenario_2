@@ -1,0 +1,56 @@
+E2E Scenario: Successful Login, Product Verification, Add to Cart, and Logout
+
+Description:
+Verify that a user can log in successfully, view products, add a product to the cart, and log out of the SauceDemo application.
+
+Pre-conditions:
+
+The user has valid credentials.
+
+The SauceDemo application is accessible.
+
+The user is on the login page: https://www.saucedemo.com/
+
+Test Steps:
+
+Open the browser and navigate to https://www.saucedemo.com/
+
+Enter standard_user in the Username field.
+
+Enter secret_sauce in the Password field.
+
+Click the Login button.
+
+Verify the Products page is displayed.
+
+Select any product (e.g., Sauce Labs Backpack).
+
+Click Add to Cart for the selected product.
+
+Verify the cart badge shows 1 item.
+
+Click the Shopping Cart icon.
+
+Verify the selected product appears in the cart.
+
+Click the Menu (☰) button.
+
+Click Logout.
+
+Expected Result:
+
+The user is redirected to the inventory page after login.
+
+Product list is displayed correctly.
+
+Selected product is added to the cart successfully.
+
+Cart reflects the correct item count.
+
+The user is logged out successfully and redirected to the login page.
+
+Post-conditions:
+
+The user session is terminated.
+
+No active login remains.
