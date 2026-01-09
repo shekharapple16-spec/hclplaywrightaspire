@@ -1,0 +1,7 @@
+Go to https://www.unilever.com/
+click our company 
+and ghen click view Our company 
+
+verify https://www.unilever.com/our-company/ opens and assert following text:
+We are Unilever
+We are a global leader in consumer goods, with a heritage of pioneering innovation that improves everyday life. Today, we combine world-class science, deep consumer insight and global reach to create brands that inspire and ignite desire, making superior products accessible to billions
