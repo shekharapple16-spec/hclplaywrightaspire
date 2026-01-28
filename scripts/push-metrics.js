@@ -1,128 +1,74 @@
+require('dotenv').config(); // Automatically loads GRAFANA_USER and GRAFANA_TOKEN
 const fs = require('fs');
 const https = require('https');
-const url = require('url');
-const path = require('path');
-const protobuf = require('protobufjs');
-const snappy = require('snappy');
 
-// --- Configuration ---
-const resultsPath = 'test-results/results.json';
-const protoPath = path.join(__dirname, '../proto/remote.proto');
+async function sendMetrics() {
+    try {
+        const rawData = fs.readFileSync('test-results/results.json', 'utf8');
+        const data = JSON.parse(rawData);
+        const timestampNs = Date.now() * 1000000;
+        let metricLines = [];
 
-const promUrl = process.env.GRAFANA_PROM_URL;
-const promUser = process.env.GRAFANA_PROM_USER;
-const promToken = process.env.GRAFANA_PROM_TOKEN;
+        function extractTests(suites) {
+            suites.forEach(suite => {
+                if (suite.specs) {
+                    suite.specs.forEach(spec => {
+                        spec.tests.forEach(test => {
+                            const result = test.results[0];
+                            
+                            // 1. Sanitize: Replace all non-alphanumeric chars with underscores
+                            // This prevents "400 Bad Request" from special characters in titles
+                            const cleanName = spec.title.replace(/[^a-zA-Z0-9]/g, '_');
+                            const status = result.status;
+                            const duration = result.duration || 0;
+                            const value = status === 'passed' ? 1 : 0;
 
-if (!promUrl || !promUser || !promToken) {
-  console.error('Missing Grafana Cloud environment variables');
-  process.exit(1);
-}
+                            // 2. Format: Influx Line Protocol
+                            // Measurement: playwright_test_report
+                            // Tags: test_name, status
+                            // Fields: value (1/0), duration (ms)
+                            metricLines.push(`playwright_test_report,test_name=${cleanName},status=${status} value=${value},duration=${duration} ${timestampNs}`);
+                        });
+                    });
+                }
+                // Handle nested suites
+                if (suite.suites) extractTests(suite.suites);
+            });
+        }
 
-// --- 1. Extract Metrics ---
-if (!fs.existsSync(resultsPath)) {
-  console.error(`Results file not found: ${resultsPath}`);
-  process.exit(1);
-}
+        extractTests(data.suites);
+        const body = metricLines.join('\n');
 
-const data = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
-const stats = data.stats;
-const timestampMs = Date.now();
+        // 3. Connection Setup
+        const url = new URL("https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/v1/push/influx/write");
+        const auth = Buffer.from(`${process.env.GRAFANA_USER}:${process.env.GRAFANA_TOKEN}`).toString('base64');
 
-const metrics = {
-  passed: stats.expected || 0,
-  failed: stats.unexpected || 0,
-  skipped: stats.skipped || 0,
-  flaky: stats.flaky || 0,
-  duration_ms: Math.round(stats.duration || 0),
-  total:
-    (stats.expected || 0) +
-    (stats.unexpected || 0) +
-    (stats.skipped || 0),
-};
+        const options = {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`, //
+                'Content-Type': 'text/plain'
+            }
+        };
 
-console.log('Extracted metrics:', metrics);
+        console.log(`🚀 Pushing ${metricLines.length} test results to Grafana...`);
 
-// --- 2. Build TimeSeries ---
-const commonLabels = {
-  job: 'playwright-tests',
-  instance: 'github-actions',
-};
-
-function createTimeSeries(name, value, labels, timestamp) {
-  return {
-    labels: Object.entries({ __name__: name, ...labels }).map(
-      ([name, value]) => ({ name, value })
-    ),
-    samples: [{ value, timestamp }],
-  };
-}
-
-const timeSeries = [
-  createTimeSeries('test_passed_total', metrics.passed, commonLabels, timestampMs),
-  createTimeSeries('test_failed_total', metrics.failed, commonLabels, timestampMs),
-  createTimeSeries('test_skipped_total', metrics.skipped, commonLabels, timestampMs),
-  createTimeSeries('test_flaky_total', metrics.flaky, commonLabels, timestampMs),
-  createTimeSeries('test_duration_ms', metrics.duration_ms, commonLabels, timestampMs),
-  createTimeSeries('test_total', metrics.total, commonLabels, timestampMs),
-];
-
-// --- 3. Push Metrics ---
-async function pushMetrics() {
-  try {
-    if (!fs.existsSync(protoPath)) {
-      throw new Error(`remote.proto not found at ${protoPath}`);
-    }
-
-    const root = await protobuf.load(protoPath);
-    const WriteRequest = root.lookupType('prometheus.WriteRequest');
-
-    const message = WriteRequest.create({ timeseries: timeSeries });
-    const encoded = WriteRequest.encode(message).finish();
-    const compressed = await snappy.compress(encoded);
-
-    const parsedUrl = url.parse(promUrl);
-    const auth = Buffer.from(`${promUser}:${promToken}`).toString('base64');
-
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: 443,
-      path: parsedUrl.path,
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${auth}`,
-        'Content-Type': 'application/x-protobuf',
-        'Content-Encoding': 'snappy',
-        'X-Prometheus-Remote-Write-Version': '0.1.0',
-        'Content-Length': compressed.length,
-      },
-    };
-
-    console.log(`Pushing ${timeSeries.length} metrics to Grafana Cloud`);
-
-    await new Promise((resolve, reject) => {
-      const req = https.request(options, (res) => {
-        let body = '';
-        res.on('data', (c) => (body += c));
-        res.on('end', () => {
-          if (res.statusCode === 200 || res.statusCode === 204) {
-            console.log('Metrics pushed successfully');
-            resolve();
-          } else {
-            reject(
-              new Error(`HTTP ${res.statusCode}: ${body}`)
-            );
-          }
+        const req = https.request(url, options, (res) => {
+            console.log(`Status Code: ${res.statusCode}`);
+            if (res.statusCode !== 204) {
+                res.on('data', d => console.log("Response:", d.toString()));
+            } else {
+                console.log("✅ Success: All test details pushed!");
+            }
         });
-      });
 
-      req.on('error', reject);
-      req.write(compressed);
-      req.end();
-    });
-  } catch (err) {
-    console.error('Push failed:', err.message);
-    process.exit(1);
-  }
+        req.on('error', (e) => console.error(`❌ Network Error: ${e.message}`));
+        req.write(body);
+        req.end();
+
+    } catch (error) {
+        console.error('❌ Script Error:', error.message);
+    }
 }
 
-pushMetrics();
+sendMetrics();

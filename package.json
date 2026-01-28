@@ -7,9 +7,17 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "@playwright/test": "^1.57.0",
     "@types/node": "^24.10.1"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.1.18",
+    "dotenv": "^17.2.3",
+    "snappyjs": "^0.7.0"
+  },
+  "imports": {
+    "#fixtures": "./fixtures.js"
   }
 }

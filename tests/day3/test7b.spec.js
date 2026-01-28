@@ -14,7 +14,7 @@
 
 
 // @ts-check
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Enable All Checkboxes on Expand Testing', async ({ page }) => {
   await page.goto('https://practice.expandtesting.com/checkboxes');
