@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test.describe('Alerts - Leafground', () => {
   test('Handle simple alert, confirm, prompt and sweet alert', async ({ page }) => {

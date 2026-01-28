@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Dropdown Validation - Single & Multi Select', async ({ page }) => {
   await page.goto('https://www.testautomationcentral.com/demo/dropdown.html');

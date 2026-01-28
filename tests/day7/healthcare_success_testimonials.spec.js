@@ -1,7 +1,11 @@
 // @ts-check
-const { test, expect } = require('@playwright/test');
-const fs = require('fs');
-const path = require('path');
+import { test, expect } from '#fixtures';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 test('Extract testimonials from Healthcare Success and write to file', async ({ page }) => {
   try {

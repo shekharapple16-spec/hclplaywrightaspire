@@ -1,7 +1,7 @@
-const { test, expect } = require('@playwright/test');
-const LoginPage = require('../../pages/LoginPage');
-const { BASE_URL, CREDENTIALS } = require('../../utils/constants');
-const { takeScreenshot } = require('../../utils/helpers');
+import { test, expect } from '#fixtures';
+import LoginPage from '../../pages/LoginPage.js';
+import { BASE_URL, CREDENTIALS } from '../../utils/constants.js';
+import { takeScreenshot } from '../../utils/helpers.js';
 
 test('Login using Page Object and helpers', async ({ page }) => {
   const loginPage = new LoginPage(page);

@@ -1,4 +1,4 @@
-﻿const { test, expect } = require('@playwright/test');
+﻿import { test, expect } from '#fixtures';
 
 test('DatePicker - select a future date', async ({ page }) => {
   await page.goto('https://demo.automationtesting.in/Datepicker.html');

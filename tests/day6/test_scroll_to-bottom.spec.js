@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Validate vertical scroll and bottom content visibility', async ({ page }) => {
 

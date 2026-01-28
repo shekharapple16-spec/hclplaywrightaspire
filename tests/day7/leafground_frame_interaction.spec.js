@@ -1,5 +1,5 @@
 // @ts-check
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Interact with embedded frame on Leafground', async ({ page }) => {
   await page.goto('https://leafground.com/frame.xhtml');

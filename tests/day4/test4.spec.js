@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Radio Button Validation', async ({ page }) => {
   await page.goto('https://demoqa.com/radio-button');

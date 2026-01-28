@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Heroku Invalid Login Validation using filter()', async ({ page }) => {
   await page.goto('https://the-internet.herokuapp.com/login');

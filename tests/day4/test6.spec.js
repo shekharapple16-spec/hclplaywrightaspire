@@ -1,4 +1,4 @@
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Dropdown Validation on QAPLAYGROUND', async ({ page }) => {
   await page.goto('https://www.qaplayground.com/practice/select');

@@ -1,4 +1,4 @@
-﻿const { test, expect } = require('@playwright/test');
+﻿import { test, expect } from '#fixtures';
 
 test('simple dojo horizontal slider test', async ({ page }) => {
   await page.goto('https://dojotoolkit.org/documentation/tutorials/1.9/sliders/demos/simple.php');

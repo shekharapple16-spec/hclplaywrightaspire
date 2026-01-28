@@ -1,4 +1,4 @@
-﻿const { test, expect } = require('@playwright/test');
+﻿import { test, expect } from '#fixtures';
 
 test('Multi-Select Listbox Validation on TestAutomationCentral', async ({ page }) => {
   await page.goto('https://testautomationcentral.com/demo/multi_select_dropdown.html');

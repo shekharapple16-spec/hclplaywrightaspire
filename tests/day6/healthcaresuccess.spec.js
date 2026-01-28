@@ -1,5 +1,5 @@
-const { test, expect } = require('@playwright/test');
-const fs = require('fs');
+import { test, expect } from '#fixtures';
+import fs from 'fs';
 
 test.skip('Healthcare Success Screenshot Comparison', async ({ page }) => {
   await page.goto('https://healthcaresuccess.com');

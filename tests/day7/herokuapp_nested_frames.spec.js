@@ -1,5 +1,5 @@
 // @ts-check
-const { test, expect } = require('@playwright/test');
+import { test, expect } from '#fixtures';
 
 test('Navigate and validate nested frames content', async ({ page }) => {
   await page.goto('https://the-internet.herokuapp.com/nested_frames');

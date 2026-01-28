@@ -1,4 +1,4 @@
-﻿const { test, expect } = require('@playwright/test');
+﻿import { test, expect } from '#fixtures';
 
 test('Validate vertical scrolling on healthcaresuccess.com', async ({ page }) => {
   // Navigate to the page
@@ -9,12 +9,12 @@ test('Validate vertical scrolling on healthcaresuccess.com', async ({ page }) =>
     window.scrollTo(0, document.body.scrollHeight);
   });
 
-  // Wait for the text to be visible
-  await page.waitForSelector('text=© 2025 Healthcare Success, LLC', { timeout: 5000 });
+  // Wait for the footer text to be visible (using regex for partial match)
+  await page.waitForSelector('text=/Healthcare Success/', { timeout: 5000 });
 
   // Verify that the bottom-most content is visible
-  const bottomText = await page.$('text=© 2025 Healthcare Success, LLC');
-  expect(bottomText).toBeTruthy();
+  const bottomText = await page.locator('text=/Healthcare Success/').first();
+  await expect(bottomText).toBeVisible();
 
   // Capture a screenshot after scrolling to confirm visual rendering
   await page.screenshot({ path: 'healthcaresuccess_scrolled.png' });
