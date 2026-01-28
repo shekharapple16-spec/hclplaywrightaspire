@@ -26,23 +26,19 @@ jobs:
 
       - name: Run Playwright Tests
         run: npx playwright test
-        continue-on-error: true   # IMPORTANT: still push metrics even if tests fail
-
-      # --- NEW STEP ADDED HERE ---
-      - name: Install Prometheus Remote Write dependencies
-        run: npm install protobufjs snappy prometheus-remote-write
-
+        continue-on-error: true
 
       - name: Push metrics to Grafana Cloud
+        if: always() # Ensures metrics are sent even if tests fail
         env:
-          GRAFANA_PROM_URL: https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom/push
-          GRAFANA_PROM_USER: ${{ secrets.GRAFANA_INSTANCE_ID }}
-          GRAFANA_PROM_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
-        run: |
-          node scripts/push-metrics.js
+          # Matching variables to the script logic
+          GRAFANA_URL: https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom/push
+          GRAFANA_USER: ${{ secrets.GRAFANA_INSTANCE_ID }}
+          GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
+        run: node scripts/push-metrics.js
 
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled( ) }}
+        if: ${{ !cancelled() }}
         with:
           name: playwright-report
           path: playwright-report/
