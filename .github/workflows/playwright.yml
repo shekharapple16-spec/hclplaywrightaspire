@@ -1,50 +1,26 @@
 name: Playwright Tests – Grafana Cloud
 
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - 'tests/**/*.spec.ts'
-      - 'tests/**/*.spec.js'
   pull_request:
     branches: [main, master]
-    paths:
-      - 'tests/**/*.spec.ts'
-      - 'tests/**/*.spec.js'
+  push:
+    branches: [main, master]
 
 jobs:
-  detect-tests:
+  playwright-tests:
     runs-on: ubuntu-latest
-    outputs:
-      test-files: ${{ steps.changed-files.outputs.all_changed_files }}
-      has-changes: ${{ steps.changed-files.outputs.any_changed }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+        totalShards: [4]
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Get changed test files
-        id: changed-files
-        uses: tj-actions/changed-files@v40
-        with:
-          files: |
-            tests/**/*.spec.ts
-            tests/**/*.spec.js
-          separator: ','
-
-      - name: Display changed files
-        run: |
-          echo "Changed test files: ${{ steps.changed-files.outputs.all_changed_files }}"
-          echo "Any changes: ${{ steps.changed-files.outputs.any_changed }}"
-
-  test:
-    needs: detect-tests
-    if: needs.detect-tests.outputs.has-changes == 'true'
-    timeout-minutes: 60
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
@@ -56,25 +32,23 @@ jobs:
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps
 
-      - name: Run New/Modified Playwright Tests Only
+      - name: Run Playwright tests (sharded)
         run: |
-          TEST_FILES="${{ needs.detect-tests.outputs.test-files }}"
-          if [ -z "$TEST_FILES" ]; then
-            echo "No test files to run"
-            exit 0
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PR detected → running changed tests only"
+            npx playwright test \
+              --only-changed=origin/${{ github.base_ref }} \
+              --shard=${{ matrix.shard }}/${{ matrix.totalShards }}
+          else
+            echo "Main branch → running full suite"
+            npx playwright test \
+              --shard=${{ matrix.shard }}/${{ matrix.totalShards }}
           fi
-          
-          # Convert comma-separated to space-separated for playwright
-          TESTS=$(echo $TEST_FILES | tr ',' ' ')
-          
-          echo "Running tests: $TESTS"
-          npx playwright test $TESTS
-        continue-on-error: true
 
-      - name: Upload Playwright Report
-        if: ${{ !cancelled() }}
+      - name: Upload Playwright Report (Shard)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report/
-          retention-days: 30
+          retention-days: 7
