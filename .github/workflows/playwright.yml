@@ -1,4 +1,4 @@
-name: Playwright Tests (Sharded + Merged Report)
+name: Playwright Tests (PR Impacted Only + Full on Main)
 
 on:
   pull_request:
@@ -24,11 +24,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 🔑 REQUIRED for --only-changed to work on PRs
-      - name: Fetch base branch for PR diff
+      # 🔑 Fetch base branch for PR diff
+      - name: Fetch base branch
         if: github.event_name == 'pull_request'
         run: |
           git fetch origin ${{ github.base_ref }} --depth=1
+
+      # 🔍 Detect changed Playwright test files
+      - name: Detect changed test files
+        id: changed-tests
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED_TESTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.spec\.ts$' || true)
+          echo "Changed tests:"
+          echo "$CHANGED_TESTS"
+          echo "changed_tests=$CHANGED_TESTS" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,14 +51,21 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      - name: Run Playwright tests (sharded)
+      # ▶️ Run tests ONLY when required
+      - name: Run Playwright tests
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "PR detected → running changed tests only"
+            if [[ -z "${{ steps.changed-tests.outputs.changed_tests }}" ]]; then
+              echo "PR detected but no test files changed → skipping Playwright execution"
+              exit 0
+            fi
+
+            echo "PR detected → running only impacted tests"
             npx playwright test \
               --only-changed=origin/${{ github.base_ref }} \
               --shard=${{ matrix.shard }}/${{ matrix.totalShards }} \
               --reporter=blob
+
           else
             echo "Main/Master branch → running full suite"
             npx playwright test \
@@ -82,23 +99,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download all blob reports
+      - name: Download blob reports
         uses: actions/download-artifact@v4
         with:
           path: all-blob-reports
-
-      - name: Flatten blob reports
-        run: |
-          mkdir -p merged-blob-reports
-          find all-blob-reports -type f -name "*.zip" -exec cp {} merged-blob-reports \;
-          echo "Flattened blob reports:"
-          ls -l merged-blob-reports
 
       - name: Merge Playwright reports
         run: |
           npx playwright merge-reports \
             --reporter html \
-            merged-blob-reports
+            all-blob-reports
 
       - name: Upload merged Playwright report
         uses: actions/upload-artifact@v4
