@@ -24,6 +24,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 🔑 REQUIRED for --only-changed to work on PRs
+      - name: Fetch base branch for PR diff
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -44,7 +50,7 @@ jobs:
               --shard=${{ matrix.shard }}/${{ matrix.totalShards }} \
               --reporter=blob
           else
-            echo "Main branch → running full suite"
+            echo "Main/Master branch → running full suite"
             npx playwright test \
               --shard=${{ matrix.shard }}/${{ matrix.totalShards }} \
               --reporter=blob
@@ -84,7 +90,7 @@ jobs:
       - name: Flatten blob reports
         run: |
           mkdir -p merged-blob-reports
-          find all-blob-reports -name "*.zip" -exec cp {} merged-blob-reports \;
+          find all-blob-reports -type f -name "*.zip" -exec cp {} merged-blob-reports \;
           echo "Flattened blob reports:"
           ls -l merged-blob-reports
 
