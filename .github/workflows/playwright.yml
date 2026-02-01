@@ -1,4 +1,4 @@
-name: Playwright Tests (PR Impacted Only + Full on Main)
+name: Playwright Tests (PR Impacted Only + Full After Merge)
 
 on:
   pull_request:
@@ -18,11 +18,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 🔑 Fetch base branch for PR diff
+      # Fetch base branch only for PR
       - name: Fetch base branch
         if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin ${{ github.base_ref }} --depth=1
+        run: git fetch origin ${{ github.base_ref }} --depth=1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -35,16 +34,19 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ▶️ Run Playwright tests
+      # -----------------------------
+      # PR → ONLY impacted tests
+      # Main/Master → FULL suite
+      # -----------------------------
       - name: Run Playwright tests
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "PR detected → running ONLY impacted tests"
+            echo "PR detected → running ONLY changed tests"
             npx playwright test \
               --only-changed=origin/${{ github.base_ref }} \
               --reporter=blob
           else
-            echo "Main/Master branch → running FULL test suite"
+            echo "Merge to main/master → running FULL suite"
             npx playwright test \
               --reporter=blob
           fi
@@ -58,7 +60,7 @@ jobs:
           retention-days: 7
 
   merge-report:
-    name: Merge Playwright Report
+    name: Merge Playwright HTML Report
     needs: playwright-tests
     runs-on: ubuntu-latest
     if: always()
@@ -75,16 +77,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # IMPORTANT: download by artifact name
       - name: Download blob report
         uses: actions/download-artifact@v4
         with:
+          name: blob-report
           path: all-blob-reports
         continue-on-error: true
 
-      - name: Check blob reports exist
+      # Safety check
+      - name: Validate blob reports
         run: |
-          if [ ! -d "all-blob-reports" ] || [ -z "$(ls -A all-blob-reports)" ]; then
-            echo "No blob reports found. Skipping merge."
+          echo "Checking downloaded blob files..."
+          ls -R all-blob-reports || true
+
+          if [ -z "$(find all-blob-reports -name '*.zip')" ]; then
+            echo "No Playwright blob reports found. Skipping merge."
             exit 0
           fi
 
