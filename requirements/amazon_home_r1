@@ -1,0 +1,8 @@
+Feature: Amazon Product Search
+
+  Scenario: User searches and views product details
+    Given user is on Amazon homepage
+    When user searches for "Wireless Mouse"
+    And user opens a product from search results
+    Then product title should be displayed
+    And product price should be visible
