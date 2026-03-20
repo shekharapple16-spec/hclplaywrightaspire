@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   push:
     branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   playwright-tests:
@@ -34,10 +35,10 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # -----------------------------
-      # PR → ONLY impacted tests
+      # PR → ONLY changed tests
       # Main/Master → FULL suite
-      # -----------------------------
+      # ---
+
       - name: Run Playwright tests
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
