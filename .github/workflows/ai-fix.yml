@@ -1,0 +1,309 @@
+# ─────────────────────────────────────────────────────────────────
+# .github/workflows/ai-fix.yml
+#
+# PURPOSE:
+#   This workflow is triggered by the WhatsApp bot when a user says
+#   "fix issue #N". It does NOT fix anything — it acts as a
+#   Playwright AGENT that:
+#     1. Runs ONLY the failing test
+#     2. Captures: error, screenshot, DOM snapshot, Playwright trace
+#     3. Posts all of it back to the bot via webhook
+#   The bot then feeds this rich context to Gemini to write a real fix.
+#
+# ADD THIS FILE TO YOUR REPO AT:
+#   .github/workflows/ai-fix.yml
+#
+# REQUIRED REPO SECRETS (Settings → Secrets → Actions):
+#   BOT_WEBHOOK_URL  → your Render bot URL e.g. https://your-bot.onrender.com
+#   BOT_SECRET       → any random string, must match BOT_WEBHOOK_SECRET in .env
+# ─────────────────────────────────────────────────────────────────
+
+name: AI Fix Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: 'Relative path to the failing test file (e.g. tests/day3/login.spec.js)'
+        required: true
+      test_title:
+        description: 'Exact test title to grep for'
+        required: true
+      issue_number:
+        description: 'GitHub issue number being fixed'
+        required: true
+      phone_number:
+        description: 'WhatsApp phone number to notify (with country code, no +)'
+        required: true
+
+jobs:
+  ai-fix-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout code ────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Node ────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # ── 3. Install dependencies ──────────────────────────────────
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── 4. Install Playwright browsers ───────────────────────────
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      # ── 5. Run ONLY the failing test ─────────────────────────────
+      #    Flags used:
+      #      --grep          → run only the specific failing test
+      #      --reporter=json → machine-readable result
+      #      --trace=on      → capture full Playwright trace
+      #      --screenshot=on → capture screenshot on failure
+      #      --video=off     → save disk space
+      #      --retries=0     → no retries so we see the raw failure
+      - name: Run failing test (Playwright Agent)
+        id: run_test
+        continue-on-error: true
+        run: |
+          npx playwright test \
+            "${{ github.event.inputs.test_file }}" \
+            --grep "${{ github.event.inputs.test_title }}" \
+            --reporter=json \
+            --trace=on \
+            --screenshot=on \
+            --video=off \
+            --retries=0 \
+            2>&1 | tee test-output.txt
+
+          # Save exit code
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      # ── 6. Extract structured error from JSON reporter ───────────
+      - name: Extract test results
+        id: extract
+        run: |
+          node << 'EOF'
+          const fs   = require('fs');
+          const path = require('path');
+
+          // Read raw output
+          const rawOutput = fs.existsSync('test-output.txt')
+            ? fs.readFileSync('test-output.txt', 'utf8')
+            : '';
+
+          // Try to parse JSON reporter output (last JSON block in output)
+          let testResult = { passed: false, error: '', failedTests: [] };
+          try {
+            // Find the JSON block in the output
+            const jsonMatch = rawOutput.match(/(\{[\s\S]*"suites"[\s\S]*\})/);
+            if (jsonMatch) {
+              const report = JSON.parse(jsonMatch[1]);
+              const failures = [];
+              function walk(suite) {
+                for (const spec of suite.specs || []) {
+                  for (const test of spec.tests || []) {
+                    const status = test.status || test.results?.[0]?.status;
+                    const error  = test.results?.[0]?.error?.message || '';
+                    if (status === 'failed' || status === 'unexpected') {
+                      failures.push({ title: spec.title, error, status });
+                    }
+                  }
+                }
+                for (const child of suite.suites || []) walk(child);
+              }
+              for (const suite of report.suites || []) walk(suite);
+              testResult.failedTests = failures;
+              testResult.passed      = failures.length === 0;
+              testResult.error       = failures[0]?.error || '';
+            }
+          } catch (e) {
+            // fallback: just grab last error lines from raw output
+            const lines = rawOutput.split('\n').filter(l => l.includes('Error') || l.includes('expect('));
+            testResult.error = lines.slice(0, 10).join('\n');
+          }
+
+          fs.writeFileSync('test-result.json', JSON.stringify(testResult, null, 2));
+          console.log('Test result:', JSON.stringify(testResult, null, 2));
+          EOF
+
+      # ── 7. Find screenshot and DOM snapshot ──────────────────────
+      - name: Find artifacts
+        id: artifacts
+        run: |
+          node << 'EOF'
+          const fs   = require('fs');
+          const path = require('path');
+
+          // Find screenshots in test-results/
+          function findFiles(dir, ext, results = []) {
+            if (!fs.existsSync(dir)) return results;
+            for (const f of fs.readdirSync(dir)) {
+              const full = path.join(dir, f);
+              if (fs.statSync(full).isDirectory()) findFiles(full, ext, results);
+              else if (f.endsWith(ext)) results.push(full);
+            }
+            return results;
+          }
+
+          const screenshots = findFiles('test-results', '.png');
+          const htmlFiles   = findFiles('test-results', '.html');
+          const traces      = findFiles('test-results', '.zip');
+
+          // Read first screenshot as base64
+          let screenshotB64 = '';
+          if (screenshots.length > 0) {
+            screenshotB64 = fs.readFileSync(screenshots[0]).toString('base64');
+            console.log(`📸 Screenshot: ${screenshots[0]} (${screenshotB64.length} chars b64)`);
+          }
+
+          // Read first HTML snapshot (DOM state) — trimmed
+          let domSnapshot = '';
+          if (htmlFiles.length > 0) {
+            const html = fs.readFileSync(htmlFiles[0], 'utf8');
+            // Extract body content only — strip scripts/styles to save space
+            const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+            domSnapshot = bodyMatch ? bodyMatch[1].slice(0, 8000) : html.slice(0, 8000);
+            console.log(`🖥️ DOM snapshot: ${htmlFiles[0]}`);
+          }
+
+          // Build artifacts summary
+          const artifacts = {
+            screenshotBase64: screenshotB64,
+            domSnapshot,
+            traceFiles: traces.map(t => path.basename(t)),
+            screenshotFiles: screenshots.map(s => path.basename(s)),
+          };
+
+          fs.writeFileSync('artifacts.json', JSON.stringify(artifacts));
+          console.log(`📦 Artifacts: ${screenshots.length} screenshots, ${htmlFiles.length} HTML, ${traces.length} traces`);
+          EOF
+
+      # ── 8. Read source files Gemini will need ────────────────────
+      - name: Read test + page object files
+        run: |
+          node << 'EOF'
+          const fs   = require('fs');
+          const path = require('path');
+
+          const testFile = '${{ github.event.inputs.test_file }}';
+          const sources  = {};
+
+          // Read the failing test file
+          if (fs.existsSync(testFile)) {
+            sources[testFile] = fs.readFileSync(testFile, 'utf8');
+            console.log(`✅ Read test file: ${testFile}`);
+          }
+
+          // Read pages/ directory (page objects)
+          function readDir(dir) {
+            if (!fs.existsSync(dir)) return;
+            for (const f of fs.readdirSync(dir)) {
+              const full = path.join(dir, f);
+              if (fs.statSync(full).isDirectory()) readDir(full);
+              else if (f.endsWith('.js') || f.endsWith('.ts')) {
+                sources[full] = fs.readFileSync(full, 'utf8').slice(0, 3000);
+              }
+            }
+          }
+          readDir('pages');
+          readDir('utils');
+
+          // Read fixtures
+          if (fs.existsSync('fixtures.js')) {
+            sources['fixtures.js'] = fs.readFileSync('fixtures.js', 'utf8').slice(0, 2000);
+          }
+
+          console.log(`📁 Source files read: ${Object.keys(sources).join(', ')}`);
+          fs.writeFileSync('source-files.json', JSON.stringify(sources));
+          EOF
+
+      # ── 9. Upload artifacts for reference ────────────────────────
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-fix-agent-artifacts
+          path: |
+            test-results/
+            test-output.txt
+            test-result.json
+          retention-days: 7
+
+      # ── 10. POST everything back to the WhatsApp bot ─────────────
+      #    This is the KEY step — sends rich context to bot so
+      #    Gemini can write a real fix instead of guessing
+      - name: Send results to WhatsApp bot
+        run: |
+          node << 'EOF'
+          const fs    = require('fs');
+          const https = require('https');
+          const url   = require('url');
+
+          const botUrl     = '${{ secrets.BOT_WEBHOOK_URL }}';
+          const botSecret  = '${{ secrets.BOT_SECRET }}';
+          const issueNum   = '${{ github.event.inputs.issue_number }}';
+          const phone      = '${{ github.event.inputs.phone_number }}';
+          const testTitle  = '${{ github.event.inputs.test_title }}';
+          const testFile   = '${{ github.event.inputs.test_file }}';
+          const runUrl     = `https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+          // Load all collected data
+          const testResult  = JSON.parse(fs.readFileSync('test-result.json',  'utf8'));
+          const artifacts   = JSON.parse(fs.readFileSync('artifacts.json',    'utf8'));
+          const sourceFiles = JSON.parse(fs.readFileSync('source-files.json', 'utf8'));
+
+          const payload = JSON.stringify({
+            secret:      botSecret,
+            type:        'ai_fix_context',
+            phone,
+            issueNumber: parseInt(issueNum),
+            testTitle,
+            testFile,
+            runUrl,
+            testResult,   // { passed, error, failedTests }
+            artifacts: {
+              screenshotBase64: artifacts.screenshotBase64,  // base64 PNG
+              domSnapshot:      artifacts.domSnapshot,       // HTML body
+              traceFiles:       artifacts.traceFiles,
+            },
+            sourceFiles,  // { 'tests/day3/login.spec.js': '...', 'pages/LoginPage.js': '...' }
+          });
+
+          const endpoint = new url.URL('/ai-fix-callback', botUrl);
+          const options  = {
+            hostname: endpoint.hostname,
+            port:     endpoint.port || 443,
+            path:     endpoint.pathname,
+            method:   'POST',
+            headers:  {
+              'Content-Type':   'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+              'x-bot-secret':   botSecret,
+            },
+          };
+
+          const proto = endpoint.protocol === 'https:' ? https : require('http');
+          const req   = proto.request(options, res => {
+            let body = '';
+            res.on('data', d => body += d);
+            res.on('end', () => {
+              console.log(`✅ Bot notified: ${res.statusCode} — ${body}`);
+            });
+          });
+
+          req.on('error', e => {
+            console.error('❌ Failed to notify bot:', e.message);
+            process.exit(1);
+          });
+
+          req.write(payload);
+          req.end();
+          EOF
