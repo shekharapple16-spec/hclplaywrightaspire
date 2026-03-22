@@ -36,9 +36,7 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ── Run failing test with trace ON ────────────────────────────
-      # trace=on captures full DOM at every step inside the .zip
-      # screenshot=on saves PNG at failure moment
+      # ── Run the failing test with trace + screenshot ───────────────
       - name: Run failing test
         continue-on-error: true
         run: |
@@ -53,13 +51,44 @@ jobs:
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
 
-      # ── Extract smart context — only relevant DOM, not full page ──
-      - name: Extract smart context
+      # ── Show what was captured (for debugging) ─────────────────────
+      - name: Debug
+        if: always()
         run: |
-          node << 'JSEOF'
-          const fs   = require('fs');
-          const path = require('path');
+          echo "=== test-results/ ===" && find test-results/ -type f 2>/dev/null || echo "empty"
+          echo "=== playwright-results.json ===" && ls -la playwright-results.json 2>/dev/null || echo "missing"
+          echo "=== last 20 lines of output ===" && tail -20 test-output.txt 2>/dev/null
 
+      # ── Extract context + send to bot (all inline) ─────────────────
+      - name: Extract and send
+        env:
+          TEST_FILE:       ${{ github.event.inputs.test_file }}
+          TEST_TITLE:      ${{ github.event.inputs.test_title }}
+          ISSUE_NUMBER:    ${{ github.event.inputs.issue_number }}
+          PHONE_NUMBER:    ${{ github.event.inputs.phone_number }}
+          RUN_URL:         https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_SECRET:      ${{ secrets.BOT_SECRET }}
+        run: |
+          node << 'NODEEOF'
+          const fs    = require('fs');
+          const path  = require('path');
+          const https = require('https');
+          const http  = require('http');
+          const url   = require('url');
+
+          const testFile   = process.env.TEST_FILE;
+          const testTitle  = process.env.TEST_TITLE;
+          const issueNum   = process.env.ISSUE_NUMBER;
+          const phone      = process.env.PHONE_NUMBER;
+          const runUrl     = process.env.RUN_URL;
+          const botUrl     = process.env.BOT_WEBHOOK_URL;
+          const botSecret  = process.env.BOT_SECRET;
+
+          console.log(`TEST_FILE: ${testFile}`);
+          console.log(`TEST_TITLE: ${testTitle}`);
+
+          // ── helpers ──────────────────────────────────────────────
           function findFiles(dir, ext, out = []) {
             if (!fs.existsSync(dir)) return out;
             for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -70,198 +99,122 @@ jobs:
             return out;
           }
 
-          const testFile    = '${{ github.event.inputs.test_file }}';
-          const rawOutput   = fs.existsSync('test-output.txt') ? fs.readFileSync('test-output.txt', 'utf8') : '';
-          const testContent = fs.existsSync(testFile) ? fs.readFileSync(testFile, 'utf8') : '';
-
-          // ── 1. Extract exact error ────────────────────────────────
+          // ── 1. Extract error ──────────────────────────────────────
           let error = '';
+          const rawOutput = fs.existsSync('test-output.txt')
+            ? fs.readFileSync('test-output.txt', 'utf8') : '';
+
           try {
             if (fs.existsSync('playwright-results.json')) {
               const report = JSON.parse(fs.readFileSync('playwright-results.json', 'utf8'));
-              function walk(suite) {
+              (function walk(suite) {
                 for (const spec of suite.specs || []) {
                   for (const test of spec.tests || []) {
-                    const status = test.status || test.results?.[0]?.status;
-                    if (status === 'failed' || status === 'unexpected') {
-                      const err   = test.results?.[0]?.error?.message || '';
-                      const stack = test.results?.[0]?.error?.stack   || '';
-                      error = `${err}\n${stack.split('\n').slice(0,5).join('\n')}`.trim();
+                    const st = test.status || test.results?.[0]?.status;
+                    if (st === 'failed' || st === 'unexpected') {
+                      const msg   = test.results?.[0]?.error?.message || '';
+                      const stack = (test.results?.[0]?.error?.stack || '').split('\n').slice(0,8).join('\n');
+                      error = `${msg}\n${stack}`.trim();
                     }
                   }
                 }
                 for (const child of suite.suites || []) walk(child);
-              }
-              for (const suite of report.suites || []) walk(suite);
+              })(report);
             }
-          } catch(e) {}
+          } catch(e) { console.log('JSON parse fallback:', e.message); }
 
           if (!error) {
-            // Fallback from terminal output
             error = rawOutput.split('\n')
-              .filter(l => l.includes('Error:') || l.includes('expect(') || l.includes('waiting for'))
-              .slice(0, 10).join('\n');
+              .filter(l => l.includes('Error:') || l.includes('expect(') || l.includes('waiting for') || l.includes('TimeoutError'))
+              .slice(0, 15).join('\n');
           }
-          console.log(`Error: ${error.slice(0, 200)}`);
+          console.log(`Error (${error.length} chars): ${error.slice(0,150)}`);
 
-          // ── 2. Extract selectors the test uses ───────────────────
+          // ── 2. Read test file ─────────────────────────────────────
+          const testContent = fs.existsSync(testFile)
+            ? fs.readFileSync(testFile, 'utf8') : '';
+          if (!testContent) {
+            console.log(`WARNING: test file not found: ${testFile}`);
+            const allTests = findFiles('tests', '.js', []);
+            console.log('Available test files:', allTests.join(', '));
+          }
+
+          // ── 3. Extract selectors from test ────────────────────────
           const selectors = [
             ...[...testContent.matchAll(/(?:locator|fill|click|type|waitFor(?:Selector)?|getBy\w+)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g)].map(m => m[1]),
             ...[...testContent.matchAll(/(#[\w-]{2,}|\.[\w-]{2,}|\[[\w-="']{3,}\])/g)].map(m => m[0]),
-          ].filter((v, i, a) => a.indexOf(v) === i).slice(0, 15);
+          ].filter((v, i, a) => v.length > 2 && a.indexOf(v) === i).slice(0, 15);
           console.log(`Selectors: ${selectors.join(', ')}`);
 
-          // ── 3. Extract RELEVANT DOM — only matching elements ─────
-          // Not the full page, just the elements the test touches
+          // ── 4. Extract relevant DOM only ──────────────────────────
           const htmlFiles = findFiles('test-results', '.html');
+          console.log(`HTML files: ${htmlFiles.join(', ')}`);
           let domSnapshot = '';
 
           if (htmlFiles.length > 0) {
-            const pageSnaps = htmlFiles.filter(f => !f.includes('index.html'));
+            const pageSnaps = htmlFiles.filter(f => !path.basename(f).includes('index') && !f.includes('playwright-report'));
             const target    = pageSnaps[0] || htmlFiles[0];
             const html      = fs.readFileSync(target, 'utf8');
-
-            // Extract body, strip scripts/styles
-            let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)||['',''])[1];
-            body = body
-              .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-              .replace(/<style\b[\s\S]*?<\/style>/gi, '')
-              .replace(/\s+/g, ' ').trim();
+            let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
+            body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
 
             if (selectors.length > 0) {
-              // Split into tags and keep only relevant ones
               const tags     = body.match(/<[^>]+>[^<]*/g) || [];
-              const relevant = tags.filter(tag =>
-                selectors.some(sel => {
-                  const clean = sel.replace(/^[#.\[]/, '').replace(/[=\]"']/g, '');
-                  return tag.toLowerCase().includes(clean.toLowerCase());
-                })
-              );
-
-              if (relevant.length > 0) {
-                domSnapshot = relevant.slice(0, 20).join('\n').slice(0, 2000);
-                console.log(`✅ Relevant DOM: ${relevant.length} elements matched`);
-              } else {
-                // No match — send first 1000 chars as fallback
-                domSnapshot = body.slice(0, 1000);
-                console.log(`⚠️ No selector match in DOM — using first 1000 chars`);
-              }
+              const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
+              domSnapshot    = relevant.length > 0 ? relevant.slice(0,25).join('\n').slice(0,2500) : body.slice(0,1500);
+              console.log(`DOM: ${relevant.length} relevant elements, ${domSnapshot.length} chars`);
             } else {
-              domSnapshot = body.slice(0, 1000);
+              domSnapshot = body.slice(0, 1500);
             }
           }
 
-          // ── 4. Read only the test file + its page object ─────────
-          // NOT all files — just the ones directly related to this test
+          // ── 5. Read test file + imports only ─────────────────────
           const sources = {};
+          if (testContent) sources[testFile] = testContent;
 
-          // Always include the failing test file
-          if (fs.existsSync(testFile)) {
-            sources[testFile] = fs.readFileSync(testFile, 'utf8');
-            console.log(`✅ Test file: ${testFile}`);
-          }
-
-          // Find page object used by this test (look at imports)
-          const importMatches = [...testContent.matchAll(/(?:require|from)\s*['"`](\.\.?\/[^'"`]+)['"`]/g)];
+          const importMatches = [...testContent.matchAll(/(?:require|from)\s*['"`](\.\.?\/[^'"`\n]+)['"`]/g)];
           for (const match of importMatches) {
-            const importPath = match[1];
-            // Resolve relative to test file location
-            const resolved = path.resolve(path.dirname(testFile), importPath);
-            const candidates = [
-              resolved,
-              resolved + '.js',
-              resolved + '.ts',
-              resolved + '/index.js',
-            ];
-            for (const c of candidates) {
+            const base       = path.resolve(path.dirname(path.resolve(testFile)));
+            const resolved   = path.resolve(base, match[1]);
+            for (const c of [resolved, resolved+'.js', resolved+'.ts', resolved+'/index.js']) {
               if (fs.existsSync(c)) {
                 const rel = path.relative(process.cwd(), c);
                 sources[rel] = fs.readFileSync(c, 'utf8').slice(0, 3000);
-                console.log(`✅ Import: ${rel}`);
+                console.log(`Import: ${rel}`);
                 break;
               }
             }
           }
-
-          // Include fixtures if used
           if (testContent.includes('fixtures') && fs.existsSync('fixtures.js')) {
             sources['fixtures.js'] = fs.readFileSync('fixtures.js', 'utf8').slice(0, 1000);
           }
 
-          console.log(`📁 Total files: ${Object.keys(sources).length} — ${Object.keys(sources).join(', ')}`);
-          console.log(`🖥️ DOM: ${domSnapshot.length} chars`);
-          console.log(`❌ Error: ${error.slice(0,100)}`);
+          console.log(`Sources (${Object.keys(sources).length}): ${Object.keys(sources).join(', ')}`);
 
-          // ── Write output (NO screenshot — saves tokens) ───────────
-          fs.writeFileSync('agent-output.json', JSON.stringify({
-            error,
-            domSnapshot,          // relevant DOM only
-            screenshotBase64: '', // intentionally empty — DOM is enough
-            rawOutput: rawOutput.slice(-1000),
-          }));
-          fs.writeFileSync('source-files.json', JSON.stringify(sources));
-          console.log('✅ Done');
-          JSEOF
-
-      # ── Upload artifacts ──────────────────────────────────────────
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ai-fix-agent-artifacts
-          path: |
-            test-results/
-            playwright-results.json
-            agent-output.json
-            source-files.json
-            test-output.txt
-          retention-days: 7
-
-      # ── POST to WhatsApp bot ──────────────────────────────────────
-      - name: Send to bot
-        run: |
-          node << 'JSEOF'
-          const fs    = require('fs');
-          const https = require('https');
-          const http  = require('http');
-          const url   = require('url');
-
-          const botUrl    = '${{ secrets.BOT_WEBHOOK_URL }}';
-          const botSecret = '${{ secrets.BOT_SECRET }}';
-
-          if (!botUrl) { console.error('❌ BOT_WEBHOOK_URL not set'); process.exit(1); }
-
-          const agentOut  = JSON.parse(fs.readFileSync('agent-output.json',  'utf8'));
-          const sources   = JSON.parse(fs.readFileSync('source-files.json',  'utf8'));
-
+          // ── 6. Send to bot ────────────────────────────────────────
           const payload = JSON.stringify({
             secret:      botSecret,
             type:        'ai_fix_context',
-            phone:       '${{ github.event.inputs.phone_number }}',
-            issueNumber: parseInt('${{ github.event.inputs.issue_number }}'),
-            testTitle:   '${{ github.event.inputs.test_title }}',
-            testFile:    '${{ github.event.inputs.test_file }}',
-            runUrl:      'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+            phone,
+            issueNumber: parseInt(issueNum),
+            testTitle,
+            testFile,
+            runUrl,
             testResult: {
               passed:      false,
-              error:       agentOut.error,
-              failedTests: [{ title: '${{ github.event.inputs.test_title }}', error: agentOut.error }],
+              error,
+              failedTests: [{ title: testTitle, error }],
             },
             artifacts: {
-              screenshotBase64: '',               // not sent — saves tokens
-              domSnapshot:      agentOut.domSnapshot,
-              rawErrorOutput:   agentOut.rawOutput,
+              screenshotBase64: '',
+              domSnapshot,
+              rawErrorOutput:   rawOutput.slice(-1000),
             },
             sourceFiles: sources,
           });
 
           const kb = Math.round(payload.length / 1024);
-          console.log(`📤 Payload: ${kb}KB (target <10KB)`);
-          console.log(`   DOM:     ${agentOut.domSnapshot?.length} chars`);
-          console.log(`   Error:   ${agentOut.error?.slice(0, 100)}`);
-          console.log(`   Sources: ${Object.keys(sources).join(', ')}`);
-
-          if (kb > 50) console.warn(`⚠️ Payload large (${kb}KB) — consider reducing`);
+          console.log(`Sending to bot: ${kb}KB | DOM: ${domSnapshot.length} chars | Sources: ${Object.keys(sources).length}`);
 
           const endpoint = new url.URL('/ai-fix-callback', botUrl);
           const isHttps  = endpoint.protocol === 'https:';
@@ -270,24 +223,31 @@ jobs:
             port:     endpoint.port || (isHttps ? 443 : 80),
             path:     endpoint.pathname,
             method:   'POST',
-            headers: {
-              'Content-Type':   'application/json',
-              'Content-Length': Buffer.byteLength(payload),
-              'x-bot-secret':   botSecret,
-            },
+            headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'x-bot-secret': botSecret },
           };
 
-          const proto = isHttps ? https : http;
-          const req   = proto.request(options, res => {
+          const req = (isHttps ? https : http).request(options, res => {
             let body = '';
             res.on('data', d => body += d);
             res.on('end', () => {
-              if (res.statusCode === 200) console.log(`✅ Bot notified`);
-              else { console.error(`❌ Bot: ${res.statusCode} ${body}`); process.exit(1); }
+              if (res.statusCode === 200) console.log('Bot notified successfully');
+              else { console.error(`Bot returned ${res.statusCode}: ${body}`); process.exit(1); }
             });
           });
-          req.on('error', e => { console.error('❌', e.message); process.exit(1); });
+          req.on('error', e => { console.error(e.message); process.exit(1); });
           req.setTimeout(30000, () => { req.destroy(); process.exit(1); });
           req.write(payload);
           req.end();
-          JSEOF
+          NODEEOF
+
+      # ── Upload artifacts for reference ────────────────────────────
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-fix-agent-artifacts
+          path: |
+            test-results/
+            playwright-results.json
+            test-output.txt
+          retention-days: 7
