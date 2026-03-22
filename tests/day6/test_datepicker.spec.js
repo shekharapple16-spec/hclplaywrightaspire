@@ -1,4 +1,4 @@
-﻿import { test, expect } from '#fixtures';
+import { test, expect } from '#fixtures';
 
 test('DatePicker - select a future date', async ({ page }) => {
   await page.goto('https://demo.automationtesting.in/Datepicker.html');
@@ -14,6 +14,10 @@ test('DatePicker - select a future date', async ({ page }) => {
     if (target) target.value = v;
   }, value);
   await page.waitForTimeout(500);
-  const current = await page.evaluate(() => document.querySelector('input')?.value || '');
+  const current = await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll('input'));
+    const target = inputs.find(i => i && (i.id && i.id.toLowerCase().includes('date')) ) || inputs[0];
+    return target?.value || '';
+  });
   expect(current).toContain(String(year));
 });
