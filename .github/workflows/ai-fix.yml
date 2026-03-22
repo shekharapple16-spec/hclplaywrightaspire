@@ -36,10 +36,10 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ── Step 1: Run failing test with screenshot + trace forced ON ─
-      # We pass use.screenshot and use.trace via CLI override
-      # This matches your playwright.yml setup but adds capture
-      - name: Run failing test with full capture
+      # ── Run failing test with trace ON ────────────────────────────
+      # trace=on captures full DOM at every step inside the .zip
+      # screenshot=on saves PNG at failure moment
+      - name: Run failing test
         continue-on-error: true
         run: |
           npx playwright test \
@@ -49,13 +49,12 @@ jobs:
             --retries=0 \
             --trace=on \
             --screenshot=on \
-            --output=test-results \
             2>&1 | tee test-output.txt
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
 
-      # ── Step 2: Extract error + screenshot + DOM from trace ────────
-      - name: Extract agent context
+      # ── Extract smart context — only relevant DOM, not full page ──
+      - name: Extract smart context
         run: |
           node << 'JSEOF'
           const fs   = require('fs');
@@ -71,17 +70,11 @@ jobs:
             return out;
           }
 
-          const screenshots = findFiles('test-results', '.png');
-          const htmlFiles   = findFiles('test-results', '.html');
-          const rawOutput   = fs.existsSync('test-output.txt')
-            ? fs.readFileSync('test-output.txt', 'utf8') : '';
+          const testFile    = '${{ github.event.inputs.test_file }}';
+          const rawOutput   = fs.existsSync('test-output.txt') ? fs.readFileSync('test-output.txt', 'utf8') : '';
+          const testContent = fs.existsSync(testFile) ? fs.readFileSync(testFile, 'utf8') : '';
 
-          console.log(`Screenshots found: ${screenshots.length}`);
-          console.log(`HTML files found:  ${htmlFiles.length}`);
-          console.log(`Screenshot paths:  ${screenshots.join(', ')}`);
-          console.log(`HTML paths:        ${htmlFiles.join(', ')}`);
-
-          // ── Parse error from JSON report ──
+          // ── 1. Extract exact error ────────────────────────────────
           let error = '';
           try {
             if (fs.existsSync('playwright-results.json')) {
@@ -90,10 +83,10 @@ jobs:
                 for (const spec of suite.specs || []) {
                   for (const test of spec.tests || []) {
                     const status = test.status || test.results?.[0]?.status;
-                    const err    = test.results?.[0]?.error?.message || '';
-                    const stack  = test.results?.[0]?.error?.stack  || '';
                     if (status === 'failed' || status === 'unexpected') {
-                      error = `${err}\n${stack}`.trim();
+                      const err   = test.results?.[0]?.error?.message || '';
+                      const stack = test.results?.[0]?.error?.stack   || '';
+                      error = `${err}\n${stack.split('\n').slice(0,5).join('\n')}`.trim();
                     }
                   }
                 }
@@ -101,119 +94,116 @@ jobs:
               }
               for (const suite of report.suites || []) walk(suite);
             }
-          } catch(e) {
-            console.log('Could not parse JSON report:', e.message);
-          }
+          } catch(e) {}
 
-          // Fallback: grep terminal output for error
           if (!error) {
-            const errLines = rawOutput.split('\n').filter(l =>
-              l.includes('Error:') || l.includes('expect(') ||
-              l.includes('TimeoutError') || l.includes('locator(') ||
-              l.includes('strict mode') || l.includes('waiting for')
-            );
-            error = errLines.slice(0, 20).join('\n');
+            // Fallback from terminal output
+            error = rawOutput.split('\n')
+              .filter(l => l.includes('Error:') || l.includes('expect(') || l.includes('waiting for'))
+              .slice(0, 10).join('\n');
           }
+          console.log(`Error: ${error.slice(0, 200)}`);
 
-          console.log(`Error captured: ${error.slice(0, 200)}`);
+          // ── 2. Extract selectors the test uses ───────────────────
+          const selectors = [
+            ...[...testContent.matchAll(/(?:locator|fill|click|type|waitFor(?:Selector)?|getBy\w+)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g)].map(m => m[1]),
+            ...[...testContent.matchAll(/(#[\w-]{2,}|\.[\w-]{2,}|\[[\w-="']{3,}\])/g)].map(m => m[0]),
+          ].filter((v, i, a) => a.indexOf(v) === i).slice(0, 15);
+          console.log(`Selectors: ${selectors.join(', ')}`);
 
-          // ── Screenshot: take the LAST one (failure moment) ──
-          let screenshotBase64 = '';
-          if (screenshots.length > 0) {
-            // Sort by modification time — last modified = failure moment
-            const sorted = screenshots
-              .map(f => ({ f, t: fs.statSync(f).mtimeMs }))
-              .sort((a, b) => b.t - a.t);
-            const lastShot = sorted[0].f;
-            screenshotBase64 = fs.readFileSync(lastShot).toString('base64');
-            console.log(`Screenshot: ${lastShot} (${Math.round(screenshotBase64.length/1024)}KB b64)`);
-          } else {
-            console.log('⚠️ No screenshots found — trace may not have captured them');
-          }
-
-          // ── DOM: extract from Playwright HTML snapshot ──
-          // Playwright saves HTML snapshots inside test-results/
-          // These contain the ACTUAL page DOM at the point of failure
+          // ── 3. Extract RELEVANT DOM — only matching elements ─────
+          // Not the full page, just the elements the test touches
+          const htmlFiles = findFiles('test-results', '.html');
           let domSnapshot = '';
-          if (htmlFiles.length > 0) {
-            // Filter out playwright-report HTML (we want page snapshots)
-            const pageSnaps = htmlFiles.filter(f =>
-              !f.includes('playwright-report') &&
-              !f.includes('index.html')
-            );
-            const target = pageSnaps.length > 0 ? pageSnaps[0] : htmlFiles[0];
-            console.log(`Using DOM from: ${target}`);
 
-            const html = fs.readFileSync(target, 'utf8');
-            // Extract body content — remove scripts/styles, keep structure
-            let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['', html])[1];
+          if (htmlFiles.length > 0) {
+            const pageSnaps = htmlFiles.filter(f => !f.includes('index.html'));
+            const target    = pageSnaps[0] || htmlFiles[0];
+            const html      = fs.readFileSync(target, 'utf8');
+
+            // Extract body, strip scripts/styles
+            let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)||['',''])[1];
             body = body
-              .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-              .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-              .replace(/<!--[\s\S]*?-->/g, '')
-              .replace(/\s+/g, ' ')
-              .trim();
-            domSnapshot = body.slice(0, 12000);
-            console.log(`DOM snapshot: ${domSnapshot.length} chars`);
-          } else {
-            console.log('⚠️ No HTML snapshots found in test-results/');
-            // Last resort: dump raw terminal output context
-            domSnapshot = `No DOM snapshot captured. Raw error output:\n${rawOutput.slice(-2000)}`;
+              .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+              .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+              .replace(/\s+/g, ' ').trim();
+
+            if (selectors.length > 0) {
+              // Split into tags and keep only relevant ones
+              const tags     = body.match(/<[^>]+>[^<]*/g) || [];
+              const relevant = tags.filter(tag =>
+                selectors.some(sel => {
+                  const clean = sel.replace(/^[#.\[]/, '').replace(/[=\]"']/g, '');
+                  return tag.toLowerCase().includes(clean.toLowerCase());
+                })
+              );
+
+              if (relevant.length > 0) {
+                domSnapshot = relevant.slice(0, 20).join('\n').slice(0, 2000);
+                console.log(`✅ Relevant DOM: ${relevant.length} elements matched`);
+              } else {
+                // No match — send first 1000 chars as fallback
+                domSnapshot = body.slice(0, 1000);
+                console.log(`⚠️ No selector match in DOM — using first 1000 chars`);
+              }
+            } else {
+              domSnapshot = body.slice(0, 1000);
+            }
           }
 
-          // ── Write output ──
-          const output = {
-            error,
-            screenshotBase64,
-            domSnapshot,
-            rawOutput: rawOutput.slice(-4000),
-          };
-          fs.writeFileSync('agent-output.json', JSON.stringify(output));
-          console.log('✅ Agent context written');
-          console.log(`  Screenshot: ${screenshotBase64.length > 100 ? 'YES ✅' : 'NO ❌'}`);
-          console.log(`  DOM:        ${domSnapshot.length > 100 ? 'YES ✅' : 'NO ❌'}`);
-          JSEOF
+          // ── 4. Read only the test file + its page object ─────────
+          // NOT all files — just the ones directly related to this test
+          const sources = {};
 
-      # ── Step 3: Read ALL source files ─────────────────────────────
-      - name: Read source files
-        run: |
-          node << 'JSEOF'
-          const fs   = require('fs');
-          const path = require('path');
-          const testFile = '${{ github.event.inputs.test_file }}';
-          const sources  = {};
+          // Always include the failing test file
+          if (fs.existsSync(testFile)) {
+            sources[testFile] = fs.readFileSync(testFile, 'utf8');
+            console.log(`✅ Test file: ${testFile}`);
+          }
 
-          function readDir(dir) {
-            if (!fs.existsSync(dir)) return;
-            for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, f.name);
-              if (f.isDirectory()) readDir(full);
-              else if (f.name.match(/\.(js|ts)$/) && !f.name.includes('.config.')) {
-                sources[full] = fs.readFileSync(full, 'utf8').slice(0, 4000);
+          // Find page object used by this test (look at imports)
+          const importMatches = [...testContent.matchAll(/(?:require|from)\s*['"`](\.\.?\/[^'"`]+)['"`]/g)];
+          for (const match of importMatches) {
+            const importPath = match[1];
+            // Resolve relative to test file location
+            const resolved = path.resolve(path.dirname(testFile), importPath);
+            const candidates = [
+              resolved,
+              resolved + '.js',
+              resolved + '.ts',
+              resolved + '/index.js',
+            ];
+            for (const c of candidates) {
+              if (fs.existsSync(c)) {
+                const rel = path.relative(process.cwd(), c);
+                sources[rel] = fs.readFileSync(c, 'utf8').slice(0, 3000);
+                console.log(`✅ Import: ${rel}`);
+                break;
               }
             }
           }
 
-          // Full test file (no truncation — most important)
-          if (fs.existsSync(testFile)) {
-            sources[testFile] = fs.readFileSync(testFile, 'utf8');
-            console.log(`✅ Test file: ${testFile} (${sources[testFile].length} chars)`);
-          } else {
-            console.log(`❌ Test file not found: ${testFile}`);
+          // Include fixtures if used
+          if (testContent.includes('fixtures') && fs.existsSync('fixtures.js')) {
+            sources['fixtures.js'] = fs.readFileSync('fixtures.js', 'utf8').slice(0, 1000);
           }
 
-          readDir('pages');
-          readDir('utils');
-          readDir('scripts');
-          if (fs.existsSync('fixtures.js')) sources['fixtures.js'] = fs.readFileSync('fixtures.js', 'utf8');
-          if (fs.existsSync('fixtures.ts')) sources['fixtures.ts'] = fs.readFileSync('fixtures.ts', 'utf8');
-          if (fs.existsSync('playwright.config.js')) sources['playwright.config.js'] = fs.readFileSync('playwright.config.js', 'utf8').slice(0, 2000);
+          console.log(`📁 Total files: ${Object.keys(sources).length} — ${Object.keys(sources).join(', ')}`);
+          console.log(`🖥️ DOM: ${domSnapshot.length} chars`);
+          console.log(`❌ Error: ${error.slice(0,100)}`);
 
-          console.log(`📁 Source files (${Object.keys(sources).length}): ${Object.keys(sources).join(', ')}`);
+          // ── Write output (NO screenshot — saves tokens) ───────────
+          fs.writeFileSync('agent-output.json', JSON.stringify({
+            error,
+            domSnapshot,          // relevant DOM only
+            screenshotBase64: '', // intentionally empty — DOM is enough
+            rawOutput: rawOutput.slice(-1000),
+          }));
           fs.writeFileSync('source-files.json', JSON.stringify(sources));
+          console.log('✅ Done');
           JSEOF
 
-      # ── Step 4: Upload artifacts ───────────────────────────────────
+      # ── Upload artifacts ──────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -227,7 +217,7 @@ jobs:
             test-output.txt
           retention-days: 7
 
-      # ── Step 5: POST everything to WhatsApp bot ────────────────────
+      # ── POST to WhatsApp bot ──────────────────────────────────────
       - name: Send to bot
         run: |
           node << 'JSEOF'
@@ -258,18 +248,20 @@ jobs:
               failedTests: [{ title: '${{ github.event.inputs.test_title }}', error: agentOut.error }],
             },
             artifacts: {
-              screenshotBase64: agentOut.screenshotBase64,
+              screenshotBase64: '',               // not sent — saves tokens
               domSnapshot:      agentOut.domSnapshot,
               rawErrorOutput:   agentOut.rawOutput,
             },
             sourceFiles: sources,
           });
 
-          console.log(`📤 Sending to bot (${Math.round(payload.length/1024)}KB)`);
-          console.log(`   Screenshot: ${agentOut.screenshotBase64?.length > 100 ? 'YES ✅' : 'NO ❌'}`);
-          console.log(`   DOM:        ${agentOut.domSnapshot?.length > 100 ? 'YES ✅' : 'NO ❌'}`);
-          console.log(`   Error:      ${agentOut.error?.slice(0, 150)}`);
-          console.log(`   Sources:    ${Object.keys(sources).length} files`);
+          const kb = Math.round(payload.length / 1024);
+          console.log(`📤 Payload: ${kb}KB (target <10KB)`);
+          console.log(`   DOM:     ${agentOut.domSnapshot?.length} chars`);
+          console.log(`   Error:   ${agentOut.error?.slice(0, 100)}`);
+          console.log(`   Sources: ${Object.keys(sources).join(', ')}`);
+
+          if (kb > 50) console.warn(`⚠️ Payload large (${kb}KB) — consider reducing`);
 
           const endpoint = new url.URL('/ai-fix-callback', botUrl);
           const isHttps  = endpoint.protocol === 'https:';
@@ -290,12 +282,8 @@ jobs:
             let body = '';
             res.on('data', d => body += d);
             res.on('end', () => {
-              if (res.statusCode === 200) {
-                console.log(`✅ Bot notified (${res.statusCode})`);
-              } else {
-                console.error(`❌ Bot returned ${res.statusCode}: ${body}`);
-                process.exit(1);
-              }
+              if (res.statusCode === 200) console.log(`✅ Bot notified`);
+              else { console.error(`❌ Bot: ${res.statusCode} ${body}`); process.exit(1); }
             });
           });
           req.on('error', e => { console.error('❌', e.message); process.exit(1); });
