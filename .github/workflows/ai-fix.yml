@@ -130,13 +130,54 @@ jobs:
           }
           console.log(`Error (${error.length} chars): ${error.slice(0,150)}`);
 
-          // ── 2. Read test file ─────────────────────────────────────
-          const testContent = fs.existsSync(testFile)
-            ? fs.readFileSync(testFile, 'utf8') : '';
+          // ── 2. Read test file — generic search across entire repo ─
+          let resolvedTestFile = testFile;
+
+          // Try paths in order of likelihood
+          const pathVariants = [
+            testFile,                           // exact as given
+            `tests/${testFile}`,                // with tests/ prefix
+            `test/${testFile}`,                 // with test/ prefix
+            `e2e/${testFile}`,                  // with e2e/ prefix
+            testFile.replace(/^tests\//, ''),   // without tests/ prefix
+          ];
+
+          for (const v of pathVariants) {
+            if (fs.existsSync(v)) { resolvedTestFile = v; break; }
+          }
+
+          // Last resort: search ALL .js/.ts files in repo by filename
+          if (!fs.existsSync(resolvedTestFile)) {
+            const basename = path.basename(testFile);
+            function searchAll(dir, results = []) {
+              if (!fs.existsSync(dir)) return results;
+              try {
+                for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                  if (f.name === 'node_modules' || f.name === '.git') continue;
+                  const full = path.join(dir, f.name);
+                  if (f.isDirectory()) searchAll(full, results);
+                  else if ((f.name.endsWith('.js') || f.name.endsWith('.ts')) && f.name === basename) {
+                    results.push(full);
+                  }
+                }
+              } catch(e) {}
+              return results;
+            }
+            const found = searchAll('.');
+            if (found.length > 0) {
+              resolvedTestFile = found[0];
+              console.log(`Found by filename search: ${resolvedTestFile}`);
+            }
+          }
+
+          const testContent = fs.existsSync(resolvedTestFile)
+            ? fs.readFileSync(resolvedTestFile, 'utf8') : '';
+
+          console.log(`Test file resolved: ${resolvedTestFile} (${testContent.length} chars)`);
           if (!testContent) {
-            console.log(`WARNING: test file not found: ${testFile}`);
-            const allTests = findFiles('tests', '.js', []);
-            console.log('Available test files:', allTests.join(', '));
+            // Show all test files for debugging
+            const allJs = findFiles('.', '.js').filter(f => !f.includes('node_modules') && !f.includes('.git')).slice(0, 20);
+            console.log('All JS files found:', allJs.join('\n'));
           }
 
           // ── 3. Extract selectors from test ────────────────────────
@@ -170,12 +211,16 @@ jobs:
 
           // ── 5. Read test file + imports only ─────────────────────
           const sources = {};
-          if (testContent) sources[testFile] = testContent;
+          if (testContent) {
+            // Use resolvedTestFile as key so Groq uses the correct path
+            sources[resolvedTestFile] = testContent;
+            console.log(`Source: ${resolvedTestFile} (${testContent.length} chars)`);
+          }
 
           const importMatches = [...testContent.matchAll(/(?:require|from)\s*['"`](\.\.?\/[^'"`\n]+)['"`]/g)];
           for (const match of importMatches) {
-            const base       = path.resolve(path.dirname(path.resolve(testFile)));
-            const resolved   = path.resolve(base, match[1]);
+            const base     = path.resolve(path.dirname(path.resolve(resolvedTestFile)));
+            const resolved = path.resolve(base, match[1]);
             for (const c of [resolved, resolved+'.js', resolved+'.ts', resolved+'/index.js']) {
               if (fs.existsSync(c)) {
                 const rel = path.relative(process.cwd(), c);
