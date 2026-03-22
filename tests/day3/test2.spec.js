@@ -7,7 +7,6 @@
 //password:admin123
 //
 //
-//
 //Scenario Description:
 //
 //Navigate to the OrangeHRM login page
