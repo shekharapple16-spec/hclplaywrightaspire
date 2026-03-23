@@ -11,6 +11,9 @@ test('Extract testimonials from Healthcare Success and write to file', async ({ 
   try {
     await page.goto('https://healthcaresuccess.com/about/testimonials');
 
+    // Ensure testimonial elements are loaded
+    await page.waitForSelector('.testimonial-slide-text', { state: 'visible' });
+
     // Extract all visible testimonial content
     const testimonials = await page.locator('.testimonial-slide-text').allTextContents();
 
@@ -18,7 +21,7 @@ test('Extract testimonials from Healthcare Success and write to file', async ({ 
     const filePath = path.join(__dirname, 'testimonials.txt');
     fs.writeFileSync(filePath, testimonials.join('\n'));
 
-  console.log(`Testimonials written to ${filePath}`);
+    console.log(`Testimonials written to ${filePath}`);
   } catch (error) {
     console.error(`Test failed: ${error}`);
     throw error; // Re-throw the error to fail the test
