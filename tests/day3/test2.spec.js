@@ -15,7 +15,7 @@
 //
 //Click the login button(getByRole())
 // @ts-check
-import { test, expect } from '#fixtures';
+import { test, expect } from '../../fixtures.js';
 test('OrangeHRM Login Validation', async ({ page }) => {
   await page.goto('https://opensource-demo.orangehrmlive.com/web/index.php/auth/login');
   await page.getByPlaceholder('Username').fill('Admin');
