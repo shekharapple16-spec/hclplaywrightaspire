@@ -36,7 +36,28 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ── Run the failing test with trace + screenshot ───────────────
+      # ── Create custom reporter to capture DOM on failure ──────────
+      - name: Create DOM capture reporter
+        run: |
+          mkdir -p test-utils
+          cat > test-utils/dom-reporter.js << 'REPORTER'
+          class DOMReporter {
+            onTestEnd(test, result) {
+              if (result.status === 'failed' && test.info?.page) {
+                try {
+                  const dom = test.info.page.content();
+                  require('fs').writeFileSync('test-results/page-dom.html', dom);
+                  console.log('✅ DOM snapshot captured:', dom.length, 'bytes');
+                } catch(e) { 
+                  console.log('⚠️ DOM capture failed:', e.message); 
+                }
+              }
+            }
+          }
+          module.exports = DOMReporter;
+          REPORTER
+
+      # ── Run the failing test with trace + screenshot + DOM ────────
       - name: Run failing test
         continue-on-error: true
         run: |
@@ -44,6 +65,7 @@ jobs:
             "${{ github.event.inputs.test_file }}" \
             --grep "${{ github.event.inputs.test_title }}" \
             --reporter=json \
+            --reporter=test-utils/dom-reporter.js \
             --retries=0 \
             --trace=on \
             --screenshot=on \
@@ -55,7 +77,8 @@ jobs:
       - name: Debug
         if: always()
         run: |
-          echo "=== test-results/ ===" && find test-results/ -type f 2>/dev/null || echo "empty"
+          echo "=== test-results/ ===" && find test-results/ -type f 2>/dev/null | head -20 || echo "empty"
+          echo "=== DOM snapshot size ===" && wc -c test-results/page-dom.html 2>/dev/null || echo "not captured"
           echo "=== playwright-results.json ===" && ls -la playwright-results.json 2>/dev/null || echo "missing"
           echo "=== last 20 lines of output ===" && tail -20 test-output.txt 2>/dev/null
 
@@ -187,32 +210,55 @@ jobs:
           ].filter((v, i, a) => v.length > 2 && a.indexOf(v) === i).slice(0, 15);
           console.log(`Selectors: ${selectors.join(', ')}`);
 
-          // ── 4. Extract relevant DOM only ──────────────────────────
-          const htmlFiles = findFiles('test-results', '.html');
-          console.log(`HTML files: ${htmlFiles.join(', ')}`);
+          // ── 4. Extract DOM — PRIORITY: page-dom.html from custom reporter ──
           let domSnapshot = '';
 
-          if (htmlFiles.length > 0) {
-            const pageSnaps = htmlFiles.filter(f => !path.basename(f).includes('index') && !f.includes('playwright-report'));
-            const target    = pageSnaps[0] || htmlFiles[0];
-            const html      = fs.readFileSync(target, 'utf8');
-            let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
-            body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
-
-            if (selectors.length > 0) {
-              const tags     = body.match(/<[^>]+>[^<]*/g) || [];
-              const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
-              domSnapshot    = relevant.length > 0 ? relevant.slice(0,25).join('\n').slice(0,2500) : body.slice(0,1500);
-              console.log(`DOM: ${relevant.length} relevant elements, ${domSnapshot.length} chars`);
-            } else {
-              domSnapshot = body.slice(0, 1500);
+          // FIRST: Try the captured DOM from our custom reporter (most reliable)
+          if (fs.existsSync('test-results/page-dom.html')) {
+            const domFile = fs.readFileSync('test-results/page-dom.html', 'utf8');
+            console.log(`✅ Using captured DOM from custom reporter: ${domFile.length} bytes`);
+            
+            // Extract only relevant body content
+            let body = (domFile.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
+            if (body) {
+              body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
+              
+              if (selectors.length > 0) {
+                const tags     = body.match(/<[^>]+>[^<]*/g) || [];
+                const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
+                domSnapshot    = relevant.length > 0 ? relevant.slice(0,30).join('\n').slice(0,3000) : body.slice(0,2000);
+                console.log(`DOM: ${relevant.length} relevant elements, ${domSnapshot.length} chars`);
+              } else {
+                domSnapshot = body.slice(0, 2000);
+              }
             }
           }
+
+          // FALLBACK: If no captured DOM, try test-results/ HTML files
+          if (!domSnapshot) {
+            const htmlFiles = findFiles('test-results', '.html').filter(f => !f.includes('index') && !f.includes('report'));
+            console.log(`⚠️ No page-dom.html. Fallback to HTML files: ${htmlFiles.join(', ')}`);
+            
+            if (htmlFiles.length > 0) {
+              const html = fs.readFileSync(htmlFiles[0], 'utf8');
+              let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
+              body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
+
+              if (selectors.length > 0) {
+                const tags     = body.match(/<[^>]+>[^<]*/g) || [];
+                const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
+                domSnapshot    = relevant.length > 0 ? relevant.slice(0,25).join('\n').slice(0,2500) : body.slice(0,1500);
+              } else {
+                domSnapshot = body.slice(0, 1500);
+              }
+            }
+          }
+
+          console.log(`Final DOM length: ${domSnapshot.length} chars`);
 
           // ── 5. Read test file + imports only ─────────────────────
           const sources = {};
           if (testContent) {
-            // Use resolvedTestFile as key so Groq uses the correct path
             sources[resolvedTestFile] = testContent;
             console.log(`Source: ${resolvedTestFile} (${testContent.length} chars)`);
           }
