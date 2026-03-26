@@ -1,25 +1,25 @@
 name: AI Fix Agent
+# Stripped down — fixtures.js handles all AI logic.
+# This workflow just runs the failing test; the auto fixture
+# captures DOM, calls Groq, and POSTs the fix to the server.
 
 on:
   workflow_dispatch:
     inputs:
       test_file:
-        description: 'Failing test file (e.g. tests/day3/login.spec.js)'
+        description: 'Failing test file (e.g. tests/day3/test1.spec.js)'
         required: true
       test_title:
         description: 'Exact test title'
-        required: true
-      issue_number:
-        description: 'GitHub issue number'
         required: true
       phone_number:
         description: 'WhatsApp phone (country code, no +)'
         required: true
 
 jobs:
-  playwright-agent:
+  ai-fix:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -36,309 +36,31 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ── Create custom reporter to capture DOM on failure ──────────
-      - name: Create DOM capture reporter
-        run: |
-          mkdir -p test-utils
-          cat > test-utils/dom-reporter.js << 'REPORTER'
-          class DOMReporter {
-            onTestEnd(test, result) {
-              if (result.status === 'failed' && test.info?.page) {
-                try {
-                  const dom = test.info.page.content();
-                  require('fs').writeFileSync('test-results/page-dom.html', dom);
-                  console.log('✅ DOM snapshot captured:', dom.length, 'bytes');
-                } catch(e) { 
-                  console.log('⚠️ DOM capture failed:', e.message); 
-                }
-              }
-            }
-          }
-          module.exports = DOMReporter;
-          REPORTER
-
-      # ── Run the failing test with trace + screenshot + DOM ────────
+      # Run the specific failing test.
+      # The aiDiagnostics auto-fixture fires on failure:
+      #   → compresses DOM
+      #   → calls Groq for fix
+      #   → POSTs fix to /ai-fix-callback on server
       - name: Run failing test
-        continue-on-error: true
         run: |
           npx playwright test \
             "${{ github.event.inputs.test_file }}" \
             --grep "${{ github.event.inputs.test_title }}" \
-            --reporter=json \
-            --reporter=test-utils/dom-reporter.js \
             --retries=0 \
-            --trace=on \
-            --screenshot=on \
-            2>&1 | tee test-output.txt
+            --reporter=line
+        continue-on-error: true
         env:
-          PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          BOT_WEBHOOK_URL:  ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_SECRET:       ${{ secrets.BOT_SECRET }}
+          PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
+          RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-      # ── Show what was captured (for debugging) ─────────────────────
-      - name: Debug
-        if: always()
-        run: |
-          echo "=== test-results/ ===" && find test-results/ -type f 2>/dev/null | head -20 || echo "empty"
-          echo "=== DOM snapshot size ===" && wc -c test-results/page-dom.html 2>/dev/null || echo "not captured"
-          echo "=== playwright-results.json ===" && ls -la playwright-results.json 2>/dev/null || echo "missing"
-          echo "=== last 20 lines of output ===" && tail -20 test-output.txt 2>/dev/null
-
-      # ── Extract context + send to bot (all inline) ─────────────────
-      - name: Extract and send
-        env:
-          TEST_FILE:       ${{ github.event.inputs.test_file }}
-          TEST_TITLE:      ${{ github.event.inputs.test_title }}
-          ISSUE_NUMBER:    ${{ github.event.inputs.issue_number }}
-          PHONE_NUMBER:    ${{ github.event.inputs.phone_number }}
-          RUN_URL:         https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
-          BOT_SECRET:      ${{ secrets.BOT_SECRET }}
-        run: |
-          node << 'NODEEOF'
-          const fs    = require('fs');
-          const path  = require('path');
-          const https = require('https');
-          const http  = require('http');
-          const url   = require('url');
-
-          const testFile   = process.env.TEST_FILE;
-          const testTitle  = process.env.TEST_TITLE;
-          const issueNum   = process.env.ISSUE_NUMBER;
-          const phone      = process.env.PHONE_NUMBER;
-          const runUrl     = process.env.RUN_URL;
-          const botUrl     = process.env.BOT_WEBHOOK_URL;
-          const botSecret  = process.env.BOT_SECRET;
-
-          console.log(`TEST_FILE: ${testFile}`);
-          console.log(`TEST_TITLE: ${testTitle}`);
-
-          // ── helpers ──────────────────────────────────────────────
-          function findFiles(dir, ext, out = []) {
-            if (!fs.existsSync(dir)) return out;
-            for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, f.name);
-              if (f.isDirectory()) findFiles(full, ext, out);
-              else if (f.name.endsWith(ext)) out.push(full);
-            }
-            return out;
-          }
-
-          // ── 1. Extract error ──────────────────────────────────────
-          let error = '';
-          const rawOutput = fs.existsSync('test-output.txt')
-            ? fs.readFileSync('test-output.txt', 'utf8') : '';
-
-          try {
-            if (fs.existsSync('playwright-results.json')) {
-              const report = JSON.parse(fs.readFileSync('playwright-results.json', 'utf8'));
-              (function walk(suite) {
-                for (const spec of suite.specs || []) {
-                  for (const test of spec.tests || []) {
-                    const st = test.status || test.results?.[0]?.status;
-                    if (st === 'failed' || st === 'unexpected') {
-                      const msg   = test.results?.[0]?.error?.message || '';
-                      const stack = (test.results?.[0]?.error?.stack || '').split('\n').slice(0,8).join('\n');
-                      error = `${msg}\n${stack}`.trim();
-                    }
-                  }
-                }
-                for (const child of suite.suites || []) walk(child);
-              })(report);
-            }
-          } catch(e) { console.log('JSON parse fallback:', e.message); }
-
-          if (!error) {
-            error = rawOutput.split('\n')
-              .filter(l => l.includes('Error:') || l.includes('expect(') || l.includes('waiting for') || l.includes('TimeoutError'))
-              .slice(0, 15).join('\n');
-          }
-          console.log(`Error (${error.length} chars): ${error.slice(0,150)}`);
-
-          // ── 2. Read test file — generic search across entire repo ─
-          let resolvedTestFile = testFile;
-
-          // Try paths in order of likelihood
-          const pathVariants = [
-            testFile,                           // exact as given
-            `tests/${testFile}`,                // with tests/ prefix
-            `test/${testFile}`,                 // with test/ prefix
-            `e2e/${testFile}`,                  // with e2e/ prefix
-            testFile.replace(/^tests\//, ''),   // without tests/ prefix
-          ];
-
-          for (const v of pathVariants) {
-            if (fs.existsSync(v)) { resolvedTestFile = v; break; }
-          }
-
-          // Last resort: search ALL .js/.ts files in repo by filename
-          if (!fs.existsSync(resolvedTestFile)) {
-            const basename = path.basename(testFile);
-            function searchAll(dir, results = []) {
-              if (!fs.existsSync(dir)) return results;
-              try {
-                for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-                  if (f.name === 'node_modules' || f.name === '.git') continue;
-                  const full = path.join(dir, f.name);
-                  if (f.isDirectory()) searchAll(full, results);
-                  else if ((f.name.endsWith('.js') || f.name.endsWith('.ts')) && f.name === basename) {
-                    results.push(full);
-                  }
-                }
-              } catch(e) {}
-              return results;
-            }
-            const found = searchAll('.');
-            if (found.length > 0) {
-              resolvedTestFile = found[0];
-              console.log(`Found by filename search: ${resolvedTestFile}`);
-            }
-          }
-
-          const testContent = fs.existsSync(resolvedTestFile)
-            ? fs.readFileSync(resolvedTestFile, 'utf8') : '';
-
-          console.log(`Test file resolved: ${resolvedTestFile} (${testContent.length} chars)`);
-          if (!testContent) {
-            // Show all test files for debugging
-            const allJs = findFiles('.', '.js').filter(f => !f.includes('node_modules') && !f.includes('.git')).slice(0, 20);
-            console.log('All JS files found:', allJs.join('\n'));
-          }
-
-          // ── 3. Extract selectors from test ────────────────────────
-          const selectors = [
-            ...[...testContent.matchAll(/(?:locator|fill|click|type|waitFor(?:Selector)?|getBy\w+)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g)].map(m => m[1]),
-            ...[...testContent.matchAll(/(#[\w-]{2,}|\.[\w-]{2,}|\[[\w-="']{3,}\])/g)].map(m => m[0]),
-          ].filter((v, i, a) => v.length > 2 && a.indexOf(v) === i).slice(0, 15);
-          console.log(`Selectors: ${selectors.join(', ')}`);
-
-          // ── 4. Extract DOM — PRIORITY: page-dom.html from custom reporter ──
-          let domSnapshot = '';
-
-          // FIRST: Try the captured DOM from our custom reporter (most reliable)
-          if (fs.existsSync('test-results/page-dom.html')) {
-            const domFile = fs.readFileSync('test-results/page-dom.html', 'utf8');
-            console.log(`✅ Using captured DOM from custom reporter: ${domFile.length} bytes`);
-            
-            // Extract only relevant body content
-            let body = (domFile.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
-            if (body) {
-              body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
-              
-              if (selectors.length > 0) {
-                const tags     = body.match(/<[^>]+>[^<]*/g) || [];
-                const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
-                domSnapshot    = relevant.length > 0 ? relevant.slice(0,30).join('\n').slice(0,3000) : body.slice(0,2000);
-                console.log(`DOM: ${relevant.length} relevant elements, ${domSnapshot.length} chars`);
-              } else {
-                domSnapshot = body.slice(0, 2000);
-              }
-            }
-          }
-
-          // FALLBACK: If no captured DOM, try test-results/ HTML files
-          if (!domSnapshot) {
-            const htmlFiles = findFiles('test-results', '.html').filter(f => !f.includes('index') && !f.includes('report'));
-            console.log(`⚠️ No page-dom.html. Fallback to HTML files: ${htmlFiles.join(', ')}`);
-            
-            if (htmlFiles.length > 0) {
-              const html = fs.readFileSync(htmlFiles[0], 'utf8');
-              let body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || ['',''])[1];
-              body = body.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/\s+/g, ' ').trim();
-
-              if (selectors.length > 0) {
-                const tags     = body.match(/<[^>]+>[^<]*/g) || [];
-                const relevant = tags.filter(tag => selectors.some(sel => tag.toLowerCase().includes(sel.replace(/^[#.\[]/, '').toLowerCase())));
-                domSnapshot    = relevant.length > 0 ? relevant.slice(0,25).join('\n').slice(0,2500) : body.slice(0,1500);
-              } else {
-                domSnapshot = body.slice(0, 1500);
-              }
-            }
-          }
-
-          console.log(`Final DOM length: ${domSnapshot.length} chars`);
-
-          // ── 5. Read test file + imports only ─────────────────────
-          const sources = {};
-          if (testContent) {
-            sources[resolvedTestFile] = testContent;
-            console.log(`Source: ${resolvedTestFile} (${testContent.length} chars)`);
-          }
-
-          const importMatches = [...testContent.matchAll(/(?:require|from)\s*['"`](\.\.?\/[^'"`\n]+)['"`]/g)];
-          for (const match of importMatches) {
-            const base     = path.resolve(path.dirname(path.resolve(resolvedTestFile)));
-            const resolved = path.resolve(base, match[1]);
-            for (const c of [resolved, resolved+'.js', resolved+'.ts', resolved+'/index.js']) {
-              if (fs.existsSync(c)) {
-                const rel = path.relative(process.cwd(), c);
-                sources[rel] = fs.readFileSync(c, 'utf8').slice(0, 3000);
-                console.log(`Import: ${rel}`);
-                break;
-              }
-            }
-          }
-          if (testContent.includes('fixtures') && fs.existsSync('fixtures.js')) {
-            sources['fixtures.js'] = fs.readFileSync('fixtures.js', 'utf8').slice(0, 1000);
-          }
-
-          console.log(`Sources (${Object.keys(sources).length}): ${Object.keys(sources).join(', ')}`);
-
-          // ── 6. Send to bot ────────────────────────────────────────
-          const payload = JSON.stringify({
-            secret:      botSecret,
-            type:        'ai_fix_context',
-            phone,
-            issueNumber: parseInt(issueNum),
-            testTitle,
-            testFile,
-            runUrl,
-            testResult: {
-              passed:      false,
-              error,
-              failedTests: [{ title: testTitle, error }],
-            },
-            artifacts: {
-              screenshotBase64: '',
-              domSnapshot,
-              rawErrorOutput:   rawOutput.slice(-1000),
-            },
-            sourceFiles: sources,
-          });
-
-          const kb = Math.round(payload.length / 1024);
-          console.log(`Sending to bot: ${kb}KB | DOM: ${domSnapshot.length} chars | Sources: ${Object.keys(sources).length}`);
-
-          const endpoint = new url.URL('/ai-fix-callback', botUrl);
-          const isHttps  = endpoint.protocol === 'https:';
-          const options  = {
-            hostname: endpoint.hostname,
-            port:     endpoint.port || (isHttps ? 443 : 80),
-            path:     endpoint.pathname,
-            method:   'POST',
-            headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'x-bot-secret': botSecret },
-          };
-
-          const req = (isHttps ? https : http).request(options, res => {
-            let body = '';
-            res.on('data', d => body += d);
-            res.on('end', () => {
-              if (res.statusCode === 200) console.log('Bot notified successfully');
-              else { console.error(`Bot returned ${res.statusCode}: ${body}`); process.exit(1); }
-            });
-          });
-          req.on('error', e => { console.error(e.message); process.exit(1); });
-          req.setTimeout(30000, () => { req.destroy(); process.exit(1); });
-          req.write(payload);
-          req.end();
-          NODEEOF
-
-      # ── Upload artifacts for reference ────────────────────────────
-      - name: Upload artifacts
+      - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ai-fix-agent-artifacts
+          name: ai-fix-artifacts
           path: |
             test-results/
-            playwright-results.json
-            test-output.txt
-          retention-days: 7
+          retention-days: 3
