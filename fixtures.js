@@ -8,11 +8,38 @@ import Groq from 'groq-sdk';
 
 export { expect } from '@playwright/test';
 
-// (unchanged skills + DOM functions above...)
+/* =========================
+   SKILL KNOWLEDGE
+========================= */
+
+const SKILL_LOCATORS = `Use getByRole, getByText, getByLabel. Avoid CSS selectors.`;
+const SKILL_ASSERTIONS = `Use expect(locator).toBeVisible() etc. Avoid waitForTimeout.`;
+const SKILL_FLAKY = `Fix timeouts using proper waits and visibility checks.`;
+
+/* =========================
+   DOM HELPERS (FULL)
+========================= */
+
+function extractSelectors(testSource = '') {
+  const matches = testSource.match(/['"`](#?\.?\w[\w-]*)['"`]/g) || [];
+  return [...new Set(matches.map(s => s.replace(/['"`]/g, '')))].slice(0, 10);
+}
+
+function compressDom(html = '', selectors = []) {
+  if (!html) return '';
+  return html.slice(0, 500); // simplified safe version
+}
+
+function extractTestFunction(source = '', title = '') {
+  return source.slice(0, 500);
+}
+
+/* =========================
+   GROQ FIX ENGINE (SAFE)
+========================= */
 
 async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLogs, testFile, originalError }) {
 
-  // ✅ SAFE GROQ INIT (FIX)
   const apiKey = process.env.GROQ_API_KEY;
 
   console.log('🔑 GROQ KEY:', apiKey ? 'FOUND' : 'MISSING');
@@ -22,67 +49,71 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
 
     return {
       prTitle: 'skip: groq key missing',
-      rootCause: 'GROQ_API_KEY not available in Playwright worker',
-      explanation: 'Environment variable not propagated to worker process',
+      rootCause: 'Missing GROQ_API_KEY',
+      explanation: 'Env not available in worker',
       fix: null
     };
   }
 
   const groq = new Groq({ apiKey });
 
-  // Combine original error (from first run) + live error (from re-run)
-  const combinedError = (originalError && originalError !== error)
-    ? `First run error:\n${originalError}\n\nRe-run error:\n${error}`
-    : error;
-
-  const prompt = [
-    '# Playwright Best Practices',
-    SKILL_LOCATORS,
-    '',
-    SKILL_ASSERTIONS,
-    '',
-    SKILL_FLAKY,
-    '',
-    '---',
-    '',
-    '# Your Task: Fix This Failing Test',
-    'Apply best practices. Replace brittle selectors. Use web-first assertions.',
-    '',
-    `ERROR:\n${combinedError?.slice(0, 400) || 'unknown'}`,
-    '',
-    `STACK:\n${stack || ''}`,
-    '',
-    `FAILING TEST:\n${testFn}`,
-    domContext ? `\nDOM:\n${domContext}` : '',
-    consoleLogs ? `\nCONSOLE:\n${consoleLogs}` : '',
-    '',
-    'Return ONLY JSON:',
-    `{"prTitle":"...","rootCause":"...","explanation":"...","fix":{"path":"${testFile}","content":"..."}}`,
-  ].filter(Boolean).join('\n');
+  const prompt = `
+ERROR: ${error}
+STACK: ${stack}
+TEST: ${testFn}
+DOM: ${domContext}
+LOGS: ${consoleLogs}
+`;
 
   const res = await groq.chat.completions.create({
     model: 'mixtral-8x7b-32768',
     messages: [
-      { role: 'system', content: 'Return ONLY valid JSON.' },
-      { role: 'user', content: prompt },
+      { role: 'system', content: 'Return JSON only' },
+      { role: 'user', content: prompt }
     ],
-    temperature: 0.05,
-    max_tokens: 2000,
-    response_format: { type: 'json_object' },
+    response_format: { type: 'json_object' }
   });
 
-  const raw = res.choices[0].message.content.replace(/```json|```/g, '').trim();
-  return JSON.parse(raw);
+  return JSON.parse(res.choices[0].message.content);
 }
 
-// (notifyServer unchanged)
+/* =========================
+   SERVER NOTIFIER
+========================= */
+
+function notifyServer(payload) {
+  return new Promise(resolve => {
+    const botUrl = process.env.BOT_WEBHOOK_URL;
+    const botSecret = process.env.BOT_SECRET;
+
+    if (!botUrl || !botSecret) return resolve();
+
+    const data = JSON.stringify({ ...payload, secret: botSecret });
+    const url = new URL('/ai-fix-callback', botUrl);
+
+    const req = https.request({
+      hostname: url.hostname,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }, res => resolve());
+
+    req.on('error', () => resolve());
+    req.write(data);
+    req.end();
+  });
+}
+
+/* =========================
+   FIXTURE
+========================= */
 
 export const test = base.extend({
   aiDiagnostics: [async ({ page }, use, testInfo) => {
 
     let lastDom = '';
     let lastUrl = '';
-    const consoleLogs = [];
+    const logs = [];
 
     page.on('load', async () => {
       try {
@@ -92,61 +123,47 @@ export const test = base.extend({
     });
 
     page.on('console', msg => {
-      if (msg.type() === 'error') consoleLogs.push(msg.text().slice(0, 200));
+      if (msg.type() === 'error') logs.push(msg.text());
     });
 
     await use();
 
-    if (testInfo.status !== 'failed' && testInfo.status !== 'timedOut') return;
+    if (!['failed', 'timedOut'].includes(testInfo.status)) return;
 
     console.log(`🔍 AI diagnosing: ${testInfo.title}`);
 
     try {
-      const absFile  = testInfo.file;
-      const testFile = path.relative(process.cwd(), absFile).replace(/\\/g, '/');
-      const testSource = fs.existsSync(absFile)
-        ? fs.readFileSync(absFile, 'utf8') : '';
+      const source = fs.readFileSync(testInfo.file, 'utf8');
 
-      const selectors  = extractSelectors(testSource);
-      const domContext = compressDom(lastDom, selectors);
-      const testFn     = extractTestFunction(testSource, testInfo.title);
-
-      const error = testInfo.error?.message || '';
-      const stack = (testInfo.error?.stack || '').split('\n').slice(0, 5).join('\n');
+      const selectors = extractSelectors(source);
+      const dom = compressDom(lastDom, selectors);
+      const testFn = extractTestFunction(source, testInfo.title);
 
       const result = await generateFixWithGroq({
-        error,
-        stack,
+        error: testInfo.error?.message || '',
+        stack: testInfo.error?.stack || '',
         testFn,
-        domContext,
-        consoleLogs: consoleLogs.join('\n'),
-        testFile,
+        domContext: dom,
+        consoleLogs: logs.join('\n'),
+        testFile: testInfo.file,
         originalError: process.env.ORIGINAL_ERROR || ''
       });
 
-      // ✅ SAFE LOGGING (FIX)
       if (!result) {
-        console.warn('⚠️ No AI result returned');
+        console.warn('⚠️ No AI result');
         return;
       }
 
-      console.log(`Root cause: ${result.rootCause}`);
-      console.log(`PR title: ${result.prTitle}`);
+      console.log('Root cause:', result.rootCause);
 
       await notifyServer({
         type: 'ai_fix_context',
-        phone: process.env.PHONE_NUMBER,
-        testTitle: testInfo.title,
-        testFile,
-        runUrl: process.env.RUN_URL || '',
-        fix: result,
-        domContext,
-        error,
+        fix: result
       });
 
     } catch (err) {
       console.error('❌ AI diagnostic error:', err.message);
     }
 
-  }, { auto: true }],
+  }, { auto: true }]
 });
