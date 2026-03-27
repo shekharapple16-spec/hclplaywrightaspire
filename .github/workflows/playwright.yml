@@ -1,4 +1,4 @@
-name: Playwright Tests
+name: Playwright Tests (PR Impacted Only + Full After Merge)
 
 on:
   pull_request:
@@ -33,20 +33,24 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
+      # ✅ Run with BOTH blob + JSON reporters
       - name: Run Playwright tests
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "PR detected → running FULL suite (not only-changed, avoids ReferenceError on fixture imports)"
-            npx playwright test --reporter=blob,json
+            echo "PR detected → running ONLY changed tests"
+            npx playwright test \
+              --only-changed=origin/${{ github.base_ref }} \
+              --reporter=blob,json
           else
-            echo "Push to main/master → running FULL suite"
-            npx playwright test --reporter=blob,json
+            echo "Merge to main/master → running FULL suite"
+            npx playwright test \
+              --reporter=blob,json
           fi
         continue-on-error: true
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
-          # No AI_FIX_MODE here — fixture skips Groq silently on normal runs
 
+      # ✅ Upload blob (for HTML merge job)
       - name: Upload blob report
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,6 +59,7 @@ jobs:
           path: blob-report
           retention-days: 7
 
+      # ✅ Upload JSON (for WhatsApp bot to query)
       - name: Upload JSON report
         if: always()
         uses: actions/upload-artifact@v4
@@ -62,80 +67,6 @@ jobs:
           name: json-report
           path: playwright-results.json
           retention-days: 7
-
-      # ── Notify WhatsApp on PR runs ——————————————————————─
-      # Reads phone from PR branch name (ai-fix branches include phone in inputs)
-      # Sends result back to WhatsApp so user knows if PR fix passed or failed
-      - name: Notify WhatsApp on PR result
-        if: github.event_name == 'pull_request' && always()
-        env:
-          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
-          BOT_SECRET:      ${{ secrets.BOT_SECRET }}
-          PR_NUMBER:       ${{ github.event.pull_request.number }}
-          PR_TITLE:        ${{ github.event.pull_request.title }}
-          PR_URL:          ${{ github.event.pull_request.html_url }}
-          RUN_URL:         https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          JOB_STATUS:      ${{ job.status }}
-        run: |
-          node << 'EOF'
-          const https = require('https');
-          const http  = require('http');
-          const { URL } = require('url');
-
-          const botUrl    = process.env.BOT_WEBHOOK_URL;
-          const botSecret = process.env.BOT_SECRET;
-          const prNum     = process.env.PR_NUMBER;
-          const prTitle   = process.env.PR_TITLE;
-          const prUrl     = process.env.PR_URL;
-          const runUrl    = process.env.RUN_URL;
-          const status    = process.env.JOB_STATUS;
-
-          if (!botUrl || !botSecret) {
-            console.log('BOT_WEBHOOK_URL or BOT_SECRET not set — skipping notify');
-            process.exit(0);
-          }
-
-          // Only notify for ai-fix PRs
-          if (!prTitle.includes('fix:') && !prTitle.includes('ai-fix')) {
-            console.log('Not an AI fix PR — skipping WhatsApp notify');
-            process.exit(0);
-          }
-
-          const emoji  = status === 'success' ? '✅' : '❌';
-          const result = status === 'success'
-            ? `${emoji} PR #${prNum} tests PASSED! Safe to merge.\n🔗 ${prUrl}`
-            : `${emoji} PR #${prNum} tests FAILED. Fix still has issues.\n🔗 ${runUrl}`;
-
-          const payload = JSON.stringify({
-            type:   'pr_result',
-            secret: botSecret,
-            prNumber: parseInt(prNum),
-            status,
-            message: result,
-          });
-
-          const endpoint = new URL('/pr-result', botUrl);
-          const isHttps  = endpoint.protocol === 'https:';
-          const options  = {
-            hostname: endpoint.hostname,
-            port:     endpoint.port || (isHttps ? 443 : 80),
-            path:     endpoint.pathname,
-            method:   'POST',
-            headers: {
-              'Content-Type':   'application/json',
-              'Content-Length': Buffer.byteLength(payload),
-              'x-bot-secret':   botSecret,
-            },
-          };
-
-          const req = (isHttps ? https : http).request(options, res => {
-            console.log(`Notified: ${res.statusCode}`);
-          });
-          req.on('error', e => console.error('Notify error:', e.message));
-          req.setTimeout(10000, () => req.destroy());
-          req.write(payload);
-          req.end();
-          EOF
 
   merge-report:
     name: Merge Playwright HTML Report
@@ -171,7 +102,10 @@ jobs:
           fi
 
       - name: Merge Playwright reports
-        run: npx playwright merge-reports --reporter html all-blob-reports
+        run: |
+          npx playwright merge-reports \
+            --reporter html \
+            all-blob-reports
 
       - name: Upload merged Playwright report
         uses: actions/upload-artifact@v4
