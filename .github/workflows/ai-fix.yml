@@ -54,7 +54,7 @@ jobs:
           AI_FIX_MODE:      'true'                          # ← gates Groq call in fixture
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           BOT_WEBHOOK_URL:  ${{ secrets.BOT_WEBHOOK_URL }}
-          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+          BOT_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
           PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
           RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ORIGINAL_ERROR:   ${{ github.event.inputs.original_error }}
