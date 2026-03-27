@@ -1,10 +1,10 @@
 name: AI Fix Agent
-# Stripped down — fixtures.js handles all AI logic.
-# Workflow runs the failing test; aiDiagnostics auto-fixture:
-#   1. Captures live DOM via page 'load' events (during test, not after)
+# Runs the specific failing test.
+# aiDiagnostics auto-fixture (fixtures.js) fires on failure:
+#   1. Captures live DOM via page 'load' events (during test)
 #   2. Compresses DOM to ~200 tokens
-#   3. Calls Groq SDK with skill knowledge + error + DOM → generates fix
-#   4. POSTs fix to /ai-fix-callback on server (pure git ops there)
+#   3. Calls Groq SDK with skill knowledge + error + DOM
+#   4. POSTs fix to /ai-fix-callback on server (git ops only there)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
         description: 'WhatsApp phone (country code, no +)'
         required: true
       original_error:
-        description: 'Error message from first run (passed for richer context)'
+        description: 'Error from first run (for richer Groq context)'
         required: false
         default: ''
 
@@ -58,6 +58,8 @@ jobs:
           PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
           RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ORIGINAL_ERROR:   ${{ github.event.inputs.original_error }}
+          # Do NOT set CI= here — we want the json reporter from playwright.config.js
+          # playwright.config.js always writes both blob + json now
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
