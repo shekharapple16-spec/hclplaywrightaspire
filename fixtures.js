@@ -78,7 +78,7 @@ const SKILL_FLAKY = `
 
 function extractSelectors(testSource) {
   const patterns = [
-    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g,
+    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"\`]([^'"\`\n]{2,80})['"\`]/g,
     /(#[\w-]{2,}|\.(?!\d)[\w-]{2,}|\[[\w-]+=['"]?[\w-]+['"]?\])/g,
   ];
   const selectors = new Set();
@@ -171,19 +171,10 @@ function extractTestFunction(source, title) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  GROQ — fix generation with skill knowledge
+//  GROQ — fix generation
 // ════════════════════════════════════════════════════════════════════
 
 async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLogs, testFile, originalError }) {
-
-  const apiKey = process.env.GROQ_API_KEY;
-  console.log(`🔑 GROQ KEY: ${apiKey ? 'FOUND (' + apiKey.slice(0,8) + '...)' : 'MISSING'}`);
-
-  if (!apiKey) {
-    console.error('❌ GROQ_API_KEY not set — cannot generate fix');
-    return null;
-  }
-
   const combinedError = (originalError && originalError !== error)
     ? `First run:\n${originalError}\n\nRe-run:\n${error}`
     : error;
@@ -205,7 +196,7 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
     `{"prTitle":"fix: ...","rootCause":"...","explanation":"...","fix":{"path":"${testFile}","message":"fix: ...","content":"<FULL corrected file>"}}`,
   ].filter(Boolean).join('\n');
 
-  const groq = new Groq({ apiKey });
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
   const res = await groq.chat.completions.create({
     model:           'mixtral-8x7b-32768',
@@ -234,9 +225,6 @@ function notifyServer(payload) {
     const botUrl    = process.env.BOT_WEBHOOK_URL;
     const botSecret = process.env.BOT_SECRET;
 
-    console.log(`📡 BOT_WEBHOOK_URL: ${botUrl ? botUrl : 'MISSING'}`);
-    console.log(`🔐 BOT_SECRET: ${botSecret ? 'FOUND' : 'MISSING'}`);
-
     if (!botUrl || !botSecret) {
       console.warn('⚠️  BOT_WEBHOOK_URL or BOT_SECRET missing — skipping notify');
       return resolve();
@@ -262,13 +250,12 @@ function notifyServer(payload) {
       res.on('data', d => data += d);
       res.on('end', () => {
         console.log(res.statusCode === 200
-          ? '✅ Server notified successfully'
-          : `❌ Server returned ${res.statusCode}: ${data}`
-        );
+          ? '✅ Server notified'
+          : `❌ Server ${res.statusCode}: ${data}`);
         resolve();
       });
     });
-    req.on('error', e => { console.error('❌ Notify error:', e.message); resolve(); });
+    req.on('error', e => { console.error('❌ Notify:', e.message); resolve(); });
     req.setTimeout(20000, () => { req.destroy(); resolve(); });
     req.write(body);
     req.end();
@@ -300,7 +287,15 @@ export const test = base.extend({
 
     await use(); // run the actual test
 
+    // Only trigger on failure
     if (!['failed', 'timedOut'].includes(testInfo.status)) return;
+
+    // ── KEY GATE: only run AI fix in ai-fix.yml, not during normal runs ──
+    // playwright.yml does not set AI_FIX_MODE — skip silently there
+    if (process.env.AI_FIX_MODE !== 'true') {
+      console.log(`ℹ️  Test failed: "${testInfo.title}" — AI fix skipped (normal run, not ai-fix.yml)`);
+      return;
+    }
 
     console.log(`\n🔍 AI diagnosing: "${testInfo.title}" (${testInfo.status})`);
     console.log(`   URL at failure: ${lastUrl}`);
@@ -318,7 +313,7 @@ export const test = base.extend({
       const error = testInfo.error?.message || 'unknown error';
       const stack = (testInfo.error?.stack || '').split('\n').slice(0, 6).join('\n');
 
-      console.log(`📊 DOM compressed: ${lastDom.length} → ${domContext.length} chars`);
+      console.log(`📊 DOM: ${lastDom.length} → ${domContext.length} chars`);
       console.log(`🔎 Selectors: ${selectors.join(', ')}`);
       console.log(`⚠️  Error: ${error.slice(0, 200)}`);
 
