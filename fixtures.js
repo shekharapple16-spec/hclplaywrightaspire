@@ -199,7 +199,7 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
   const res = await groq.chat.completions.create({
-    model:           'mixtral-8x7b-32768',
+    model:           'llama-3.3-70b-versatile',
     messages: [
       { role: 'system', content: 'Expert Playwright engineer. Return ONLY valid JSON, no markdown fences.' },
       { role: 'user',   content: prompt },
