@@ -1,7 +1,10 @@
 name: AI Fix Agent
 # Stripped down — fixtures.js handles all AI logic.
-# This workflow just runs the failing test; the auto fixture
-# captures DOM, calls Groq, and POSTs the fix to the server.
+# Workflow runs the failing test; aiDiagnostics auto-fixture:
+#   1. Captures live DOM via page 'load' events (during test, not after)
+#   2. Compresses DOM to ~200 tokens
+#   3. Calls Groq SDK with skill knowledge + error + DOM → generates fix
+#   4. POSTs fix to /ai-fix-callback on server (pure git ops there)
 
 on:
   workflow_dispatch:
@@ -15,6 +18,10 @@ on:
       phone_number:
         description: 'WhatsApp phone (country code, no +)'
         required: true
+      original_error:
+        description: 'Error message from first run (passed for richer context)'
+        required: false
+        default: ''
 
 jobs:
   ai-fix:
@@ -36,11 +43,6 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # Run the specific failing test.
-      # The aiDiagnostics auto-fixture fires on failure:
-      #   → compresses DOM
-      #   → calls Groq for fix
-      #   → POSTs fix to /ai-fix-callback on server
       - name: Run failing test
         run: |
           npx playwright test \
@@ -55,12 +57,12 @@ jobs:
           BOT_SECRET:       ${{ secrets.BOT_SECRET }}
           PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
           RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ORIGINAL_ERROR:   ${{ github.event.inputs.original_error }}
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ai-fix-artifacts
-          path: |
-            test-results/
+          path: test-results/
           retention-days: 3
