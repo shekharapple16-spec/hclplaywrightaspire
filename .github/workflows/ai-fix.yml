@@ -1,10 +1,4 @@
 name: AI Fix Agent
-# Runs the specific failing test.
-# aiDiagnostics auto-fixture (fixtures.js) fires on failure:
-#   1. Captures live DOM via page 'load' events (during test)
-#   2. Compresses DOM to ~200 tokens
-#   3. Calls Groq SDK with skill knowledge + error + DOM
-#   4. POSTs fix to /ai-fix-callback on server (git ops only there)
 
 on:
   workflow_dispatch:
@@ -28,6 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # ✅ CRITICAL FIX — move env here
+    env:
+      GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+      BOT_WEBHOOK_URL:  ${{ secrets.BOT_WEBHOOK_URL }}
+      BOT_SECRET:       ${{ secrets.BOT_SECRET }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,6 +43,15 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
+      # ✅ Debug (optional, remove later)
+      - name: Debug GROQ
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY missing"
+          else
+            echo "✅ GROQ_API_KEY present"
+          fi
+
       - name: Run failing test
         run: |
           npx playwright test \
@@ -52,14 +61,9 @@ jobs:
             --reporter=line
         continue-on-error: true
         env:
-          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
-          BOT_WEBHOOK_URL:  ${{ secrets.BOT_WEBHOOK_URL }}
-          BOT_SECRET:       ${{ secrets.BOT_SECRET }}
-          PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
-          RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ORIGINAL_ERROR:   ${{ github.event.inputs.original_error }}
-          # Do NOT set CI= here — we want the json reporter from playwright.config.js
-          # playwright.config.js always writes both blob + json now
+          PHONE_NUMBER:   ${{ github.event.inputs.phone_number }}
+          RUN_URL:        https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ORIGINAL_ERROR: ${{ github.event.inputs.original_error }}
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
