@@ -249,10 +249,10 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
 function notifyServer(payload) {
   return new Promise((resolve) => {
     const botUrl    = process.env.BOT_WEBHOOK_URL;
-    const botSecret = process.env.BOT_SECRET; // ← correct env var
+    const botSecret = process.env.BOT_WEBHOOK_SECRET ; // ← correct env var
 
     if (!botUrl || !botSecret) {
-      console.warn('⚠️  BOT_WEBHOOK_URL or BOT_SECRET missing — skipping notify');
+      console.warn('⚠️  BOT_WEBHOOK_URL or BOT_WEBHOOK_SECRET  missing — skipping notify');
       return resolve();
     }
 
