@@ -78,7 +78,7 @@ const SKILL_FLAKY = `
 
 function extractSelectors(testSource) {
   const patterns = [
-    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"\`]([^'"\`\n]{2,80})['"\`]/g,
+    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g,
     /(#[\w-]{2,}|\.(?!\d)[\w-]{2,}|\[[\w-]+=['"]?[\w-]+['"]?\])/g,
   ];
   const selectors = new Set();
@@ -174,7 +174,7 @@ function extractTestFunction(source, title) {
 //  GROQ — fix generation
 // ════════════════════════════════════════════════════════════════════
 
-async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLogs, testFile, originalError }) {
+async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLogs, testFile, originalError, fullSource }) {
   const combinedError = (originalError && originalError !== error)
     ? `First run:\n${originalError}\n\nRe-run:\n${error}`
     : error;
@@ -186,14 +186,27 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
     SKILL_FLAKY, '',
     '---',
     '# Fix This Failing Test',
-    `ERROR:\n${combinedError?.slice(0, 400) || 'unknown'}`,
-    `STACK:\n${stack || ''}`,
-    `FAILING TEST:\n\`\`\`js\n${testFn}\n\`\`\``,
-    domContext  ? `DOM AT FAILURE:\n${domContext}` : '',
-    consoleLogs ? `CONSOLE ERRORS:\n${consoleLogs}` : '',
     '',
-    'Return ONLY JSON (no markdown):',
-    `{"prTitle":"fix: ...","rootCause":"...","explanation":"...","fix":{"path":"${testFile}","message":"fix: ...","content":"<FULL corrected file>"}}`,
+    `ERROR:\n${combinedError?.slice(0, 400) || 'unknown'}`,
+    '',
+    `STACK:\n${stack || ''}`,
+    '',
+    `FAILING TEST FUNCTION:\n\`\`\`js\n${testFn}\n\`\`\``,
+    '',
+    // Give Groq the FULL file so it can see the import line
+    `FULL FILE (preserve ALL imports and structure, only fix the bug):\n\`\`\`js\n${fullSource}\n\`\`\``,
+    '',
+    domContext  ? `DOM AT FAILURE:\n${domContext}\n` : '',
+    consoleLogs ? `CONSOLE ERRORS:\n${consoleLogs}\n` : '',
+    '---',
+    'CRITICAL RULES FOR THE FIX:',
+    '1. The "content" field MUST be the COMPLETE corrected file — every line including imports',
+    `2. The first line MUST be: import { test, expect } from '#fixtures';`,
+    '3. Only fix the actual bug — do not rewrite or restructure anything else',
+    '4. Do NOT remove any import statements',
+    '',
+    'Return ONLY JSON (no markdown fences):',
+    `{"prTitle":"fix: ...","rootCause":"...","explanation":"...","fix":{"path":"${testFile}","message":"fix: ...","content":"<COMPLETE corrected file starting with import line>"}}`,
   ].filter(Boolean).join('\n');
 
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -201,8 +214,13 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
   const res = await groq.chat.completions.create({
     model:           'llama-3.3-70b-versatile',
     messages: [
-      { role: 'system', content: 'Expert Playwright engineer. Return ONLY valid JSON, no markdown fences.' },
-      { role: 'user',   content: prompt },
+      {
+        role:    'system',
+        content: 'You are an expert Playwright engineer. Return ONLY valid JSON, no markdown fences. ' +
+                 'The fix.content field must be the COMPLETE file content including all import statements. ' +
+                 'Never omit the import line.',
+      },
+      { role: 'user', content: prompt },
     ],
     temperature:     0.05,
     max_tokens:      2500,
@@ -212,8 +230,16 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
   const usage = res.usage;
   console.log(`🧠 Groq | prompt: ${usage?.prompt_tokens} | completion: ${usage?.completion_tokens} tokens`);
 
-  const raw = res.choices[0].message.content.replace(/```json|```/g, '').trim();
-  return JSON.parse(raw);
+  const raw    = res.choices[0].message.content.replace(/```json|```/g, '').trim();
+  const result = JSON.parse(raw);
+
+  // ── Safety net: if Groq still drops the import, prepend it ──────
+  if (result?.fix?.content && !result.fix.content.includes("from '#fixtures'")) {
+    console.warn("⚠️  Groq dropped import line — prepending it");
+    result.fix.content = `import { test, expect } from '#fixtures';\n\n${result.fix.content}`;
+  }
+
+  return result;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -223,10 +249,10 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
 function notifyServer(payload) {
   return new Promise((resolve) => {
     const botUrl    = process.env.BOT_WEBHOOK_URL;
-    const botSecret = process.env.BOT_WEBHOOK_SECRET;
+    const botSecret = process.env.BOT_SECRET; // ← correct env var
 
     if (!botUrl || !botSecret) {
-      console.warn('⚠️  BOT_WEBHOOK_URL or BOT_WEBHOOK_SECRET missing — skipping notify');
+      console.warn('⚠️  BOT_WEBHOOK_URL or BOT_SECRET missing — skipping notify');
       return resolve();
     }
 
@@ -290,10 +316,9 @@ export const test = base.extend({
     // Only trigger on failure
     if (!['failed', 'timedOut'].includes(testInfo.status)) return;
 
-    // ── KEY GATE: only run AI fix in ai-fix.yml, not during normal runs ──
-    // playwright.yml does not set AI_FIX_MODE — skip silently there
+    // ── KEY GATE: only call Groq in ai-fix.yml ────────────────────
     if (process.env.AI_FIX_MODE !== 'true') {
-      console.log(`ℹ️  Test failed: "${testInfo.title}" — AI fix skipped (normal run, not ai-fix.yml)`);
+      console.log(`ℹ️  Test failed: "${testInfo.title}" — AI fix skipped (normal run)`);
       return;
     }
 
@@ -302,13 +327,13 @@ export const test = base.extend({
     console.log(`   DOM captured:   ${lastDom.length} chars`);
 
     try {
-      const absFile  = testInfo.file;
-      const testFile = path.relative(process.cwd(), absFile).replace(/\\/g, '/');
-      const source   = fs.existsSync(absFile) ? fs.readFileSync(absFile, 'utf8') : '';
+      const absFile    = testInfo.file;
+      const testFile   = path.relative(process.cwd(), absFile).replace(/\\/g, '/');
+      const fullSource = fs.existsSync(absFile) ? fs.readFileSync(absFile, 'utf8') : '';
 
-      const selectors  = extractSelectors(source);
+      const selectors  = extractSelectors(fullSource);
       const domContext = compressDom(lastDom, selectors);
-      const testFn     = extractTestFunction(source, testInfo.title);
+      const testFn     = extractTestFunction(fullSource, testInfo.title);
 
       const error = testInfo.error?.message || 'unknown error';
       const stack = (testInfo.error?.stack || '').split('\n').slice(0, 6).join('\n');
@@ -318,7 +343,7 @@ export const test = base.extend({
       console.log(`⚠️  Error: ${error.slice(0, 200)}`);
 
       const result = await generateFixWithGroq({
-        error, stack, testFn, domContext,
+        error, stack, testFn, domContext, fullSource,
         consoleLogs: consoleLogs.slice(0, 5).join('\n'),
         testFile,
         originalError: process.env.ORIGINAL_ERROR || '',
@@ -329,6 +354,7 @@ export const test = base.extend({
       console.log(`\n--- AI FIX ---`);
       console.log(`Root cause:  ${result.rootCause}`);
       console.log(`Explanation: ${result.explanation}`);
+      console.log(`Import preserved: ${result.fix?.content?.includes("from '#fixtures'")}`);
       console.log(`--------------\n`);
 
       await notifyServer({
