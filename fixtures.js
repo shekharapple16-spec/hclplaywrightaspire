@@ -78,7 +78,7 @@ const SKILL_FLAKY = `
 
 function extractSelectors(testSource) {
   const patterns = [
-    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"`]([^'"`\n]{2,80})['"`]/g,
+    /(?:locator|fill|click|type|waitForSelector|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\s*\(\s*['"\`]([^'"\`\n]{2,80})['"\`]/g,
     /(#[\w-]{2,}|\.(?!\d)[\w-]{2,}|\[[\w-]+=['"]?[\w-]+['"]?\])/g,
   ];
   const selectors = new Set();
@@ -193,7 +193,6 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
     '',
     `FAILING TEST FUNCTION:\n\`\`\`js\n${testFn}\n\`\`\``,
     '',
-    // Give Groq the FULL file so it can see the import line
     `FULL FILE (preserve ALL imports and structure, only fix the bug):\n\`\`\`js\n${fullSource}\n\`\`\``,
     '',
     domContext  ? `DOM AT FAILURE:\n${domContext}\n` : '',
@@ -233,9 +232,9 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
   const raw    = res.choices[0].message.content.replace(/```json|```/g, '').trim();
   const result = JSON.parse(raw);
 
-  // ── Safety net: if Groq still drops the import, prepend it ──────
+  // Safety net: if Groq still drops the import, prepend it
   if (result?.fix?.content && !result.fix.content.includes("from '#fixtures'")) {
-    console.warn("⚠️  Groq dropped import line — prepending it");
+    console.warn('⚠️  Groq dropped import line — prepending it');
     result.fix.content = `import { test, expect } from '#fixtures';\n\n${result.fix.content}`;
   }
 
@@ -243,17 +242,20 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  NOTIFY SERVER
+//  NOTIFY SERVER + WRITE SENTINEL FILE
+//  Sentinel: /tmp/fix-sent.ok
+//  ai-fix.yml checks for this file after the test run.
+//  If missing → job FAILS, PR is NOT created.
 // ════════════════════════════════════════════════════════════════════
 
 function notifyServer(payload) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const botUrl    = process.env.BOT_WEBHOOK_URL;
-    const botSecret = process.env.BOT_WEBHOOK_SECRET ; // ← correct env var
+    const botSecret = process.env.BOT_SECRET;     // ← correct env var
 
     if (!botUrl || !botSecret) {
-      console.warn('⚠️  BOT_WEBHOOK_URL or BOT_WEBHOOK_SECRET  missing — skipping notify');
-      return resolve();
+      console.error('❌ BOT_WEBHOOK_URL or BOT_SECRET missing — cannot notify server');
+      return reject(new Error('BOT_WEBHOOK_URL or BOT_SECRET missing'));
     }
 
     const body     = JSON.stringify({ ...payload, secret: botSecret });
@@ -275,14 +277,21 @@ function notifyServer(payload) {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => {
-        console.log(res.statusCode === 200
-          ? '✅ Server notified'
-          : `❌ Server ${res.statusCode}: ${data}`);
-        resolve();
+        if (res.statusCode === 200) {
+          console.log('✅ Server notified');
+          // Write sentinel file so ai-fix.yml knows fix was sent successfully
+          const sentinel = process.env.FIX_SENT_SENTINEL || '/tmp/fix-sent.ok';
+          fs.writeFileSync(sentinel, `ok:${Date.now()}`);
+          console.log(`✅ Sentinel written: ${sentinel}`);
+          resolve();
+        } else {
+          console.error(`❌ Server returned ${res.statusCode}: ${data}`);
+          reject(new Error(`Server ${res.statusCode}: ${data}`));
+        }
       });
     });
-    req.on('error', e => { console.error('❌ Notify:', e.message); resolve(); });
-    req.setTimeout(20000, () => { req.destroy(); resolve(); });
+    req.on('error', e => { console.error('❌ Notify error:', e.message); reject(e); });
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error('notify timeout')); });
     req.write(body);
     req.end();
   });
@@ -295,28 +304,21 @@ function notifyServer(payload) {
 export const test = base.extend({
   aiDiagnostics: [async ({ page }, use, testInfo) => {
 
-    // Capture DOM via load events — page is alive here, not after use()
     let lastDom = '';
     let lastUrl = '';
     const consoleLogs = [];
 
     page.on('load', async () => {
-      try {
-        lastDom = await page.content();
-        lastUrl = page.url();
-      } catch (_) {}
+      try { lastDom = await page.content(); lastUrl = page.url(); } catch (_) {}
     });
-
     page.on('console', msg => {
       if (msg.type() === 'error') consoleLogs.push(msg.text().slice(0, 200));
     });
 
-    await use(); // run the actual test
+    await use();
 
-    // Only trigger on failure
     if (!['failed', 'timedOut'].includes(testInfo.status)) return;
 
-    // ── KEY GATE: only call Groq in ai-fix.yml ────────────────────
     if (process.env.AI_FIX_MODE !== 'true') {
       console.log(`ℹ️  Test failed: "${testInfo.title}" — AI fix skipped (normal run)`);
       return;
@@ -330,13 +332,11 @@ export const test = base.extend({
       const absFile    = testInfo.file;
       const testFile   = path.relative(process.cwd(), absFile).replace(/\\/g, '/');
       const fullSource = fs.existsSync(absFile) ? fs.readFileSync(absFile, 'utf8') : '';
-
       const selectors  = extractSelectors(fullSource);
       const domContext = compressDom(lastDom, selectors);
       const testFn     = extractTestFunction(fullSource, testInfo.title);
-
-      const error = testInfo.error?.message || 'unknown error';
-      const stack = (testInfo.error?.stack || '').split('\n').slice(0, 6).join('\n');
+      const error      = testInfo.error?.message || 'unknown error';
+      const stack      = (testInfo.error?.stack || '').split('\n').slice(0, 6).join('\n');
 
       console.log(`📊 DOM: ${lastDom.length} → ${domContext.length} chars`);
       console.log(`🔎 Selectors: ${selectors.join(', ')}`);
@@ -349,14 +349,15 @@ export const test = base.extend({
         originalError: process.env.ORIGINAL_ERROR || '',
       });
 
-      if (!result) return;
+      if (!result) throw new Error('generateFixWithGroq returned null');
 
       console.log(`\n--- AI FIX ---`);
       console.log(`Root cause:  ${result.rootCause}`);
       console.log(`Explanation: ${result.explanation}`);
-      console.log(`Import preserved: ${result.fix?.content?.includes("from '#fixtures'")}`);
+      console.log(`Import ok:   ${result.fix?.content?.includes("from '#fixtures'")}`);
       console.log(`--------------\n`);
 
+      // notifyServer now rejects on failure AND writes sentinel on success
       await notifyServer({
         type:      'ai_fix_context',
         phone:     process.env.PHONE_NUMBER,
@@ -369,8 +370,11 @@ export const test = base.extend({
       });
 
     } catch (err) {
-      console.error('❌ AI diagnostic error:', err.message);
+      // Re-throw so the process exits non-zero AND sentinel is NOT written
+      // This causes ai-fix.yml "Verify fix was sent" step to fail the job
+      console.error('🚨 AI fix failed:', err.message);
       if (err.stack) console.error(err.stack.split('\n').slice(0, 4).join('\n'));
+      process.exitCode = 1; // mark failure without crashing Playwright reporter
     }
 
   }, { auto: true }],
