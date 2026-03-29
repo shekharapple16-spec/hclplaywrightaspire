@@ -250,26 +250,26 @@ async function generateFixWithGroq({ error, stack, testFn, domContext, consoleLo
 
 function notifyServer(payload) {
   return new Promise((resolve, reject) => {
-    const botUrl    = process.env.BOT_WEBHOOK_URL;
-    const botSecret = process.env.BOT_WEBHOOK_SECRET ;     // ← correct env var
+    const botUrl = process.env.BOT_WEBHOOK_URL;
+    const botSecret = process.env.BOT_WEBHOOK_SECRET;
 
     if (!botUrl || !botSecret) {
-      console.error('❌ BOT_WEBHOOK_URL or BOT_WEBHOOK_SECRET  missing — cannot notify server');
-      return reject(new Error('BOT_WEBHOOK_URL or BOT_WEBHOOK_SECRET  missing'));
+      return reject(new Error('Missing webhook config'));
     }
 
-    const body     = JSON.stringify({ ...payload, secret: botSecret });
+    const body = JSON.stringify(payload);
     const endpoint = new URL('/ai-fix-callback', botUrl);
-    const isHttps  = endpoint.protocol === 'https:';
-    const options  = {
+    const isHttps = endpoint.protocol === 'https:';
+
+    const options = {
       hostname: endpoint.hostname,
-      port:     endpoint.port || (isHttps ? 443 : 80),
-      path:     endpoint.pathname,
-      method:   'POST',
+      port: endpoint.port || (isHttps ? 443 : 80),
+      path: endpoint.pathname,
+      method: 'POST',
       headers: {
-        'Content-Type':   'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${botSecret}`,
         'Content-Length': Buffer.byteLength(body),
-        'x-bot-secret':   botSecret,
       },
     };
 
@@ -278,20 +278,16 @@ function notifyServer(payload) {
       res.on('data', d => data += d);
       res.on('end', () => {
         if (res.statusCode === 200) {
-          console.log('✅ Server notified');
-          // Write sentinel file so ai-fix.yml knows fix was sent successfully
           const sentinel = process.env.FIX_SENT_SENTINEL || '/tmp/fix-sent.ok';
           fs.writeFileSync(sentinel, `ok:${Date.now()}`);
-          console.log(`✅ Sentinel written: ${sentinel}`);
           resolve();
         } else {
-          console.error(`❌ Server returned ${res.statusCode}: ${data}`);
           reject(new Error(`Server ${res.statusCode}: ${data}`));
         }
       });
     });
-    req.on('error', e => { console.error('❌ Notify error:', e.message); reject(e); });
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error('notify timeout')); });
+
+    req.on('error', reject);
     req.write(body);
     req.end();
   });
