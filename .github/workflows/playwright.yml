@@ -12,6 +12,7 @@ jobs:
     name: Playwright Tests
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,8 +34,9 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
-      # ✅ Run with BOTH blob + JSON reporters
+      # ✅ Run tests (PR → changed, push → full)
       - name: Run Playwright tests
+        id: run_tests
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "PR detected → running ONLY changed tests"
@@ -49,8 +51,17 @@ jobs:
         continue-on-error: true
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
 
-      # ✅ Upload blob (for HTML merge job)
+      # ❗ Fail workflow if tests failed (clean control)
+      - name: Fail if tests failed
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "❌ Tests failed"
+          exit 1
+
+      # ✅ Upload blob report
       - name: Upload blob report
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,7 +70,7 @@ jobs:
           path: blob-report
           retention-days: 7
 
-      # ✅ Upload JSON (for WhatsApp bot to query)
+      # ✅ Upload JSON report
       - name: Upload JSON report
         if: always()
         uses: actions/upload-artifact@v4
@@ -73,6 +84,7 @@ jobs:
     needs: playwright-tests
     runs-on: ubuntu-latest
     if: always()
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -97,7 +109,7 @@ jobs:
           echo "Checking downloaded blob files..."
           ls -R all-blob-reports || true
           if [ -z "$(find all-blob-reports -name '*.zip')" ]; then
-            echo "No Playwright blob reports found. Skipping merge."
+            echo "No blob reports found. Skipping merge."
             exit 0
           fi
 
@@ -107,7 +119,7 @@ jobs:
             --reporter html \
             all-blob-reports
 
-      - name: Upload merged Playwright report
+      - name: Upload merged report
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
