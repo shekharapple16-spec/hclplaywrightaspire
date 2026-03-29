@@ -4,6 +4,7 @@ name: AI Fix Agent
 #   1. Capture live DOM during test
 #   2. Call Groq SDK with skill knowledge + error + DOM
 #   3. POST fix to /ai-fix-callback on server (git ops only)
+# Job FAILS if fixture did not successfully notify the server.
 
 on:
   workflow_dispatch:
@@ -42,6 +43,8 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
+      # Run the failing test — fixture fires on failure, calls Groq, notifies server
+      # Writes a sentinel file on success so next step can verify
       - name: Run failing test
         run: |
           npx playwright test \
@@ -51,18 +54,33 @@ jobs:
             --reporter=line
         continue-on-error: true
         env:
-          AI_FIX_MODE:      'true'                          # ← gates Groq call in fixture
+          AI_FIX_MODE:      'true'
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
           BOT_WEBHOOK_URL:  ${{ secrets.BOT_WEBHOOK_URL }}
-          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+          BOT_SECRET:       ${{ secrets.BOT_SECRET }}        # ← correct name
           PHONE_NUMBER:     ${{ github.event.inputs.phone_number }}
           RUN_URL:          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ORIGINAL_ERROR:   ${{ github.event.inputs.original_error }}
+          # Sentinel file path — fixture writes this on successful server notify
+          FIX_SENT_SENTINEL: /tmp/fix-sent.ok
+
+      # Fail the job explicitly if the fixture never sent the fix to the server.
+      # This prevents a "green" ai-fix run when the fix actually didn't happen.
+      - name: Verify fix was sent to server
+        run: |
+          if [ ! -f /tmp/fix-sent.ok ]; then
+            echo "❌ Fix was NOT sent to server — fixture failed to notify."
+            echo "   Check logs above for Groq errors, missing env vars, or notifyServer failures."
+            exit 1
+          fi
+          echo "✅ Fix successfully sent to server."
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ai-fix-artifacts
-          path: test-results/
+          path: |
+            test-results/
+            /tmp/fix-sent.ok
           retention-days: 3
